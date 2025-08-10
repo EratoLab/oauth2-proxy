@@ -12,7 +12,7 @@ import (
 	"github.com/oauth2-proxy/oauth2-proxy/v7/pkg/apis/sessions"
 	"github.com/oauth2-proxy/oauth2-proxy/v7/pkg/logger"
 	"github.com/oauth2-proxy/oauth2-proxy/v7/pkg/requests"
-	"github.com/oauth2-proxy/oauth2-proxy/v7/pkg/util/ptr"
+    "github.com/oauth2-proxy/oauth2-proxy/v7/pkg/util/ptr"
 	"golang.org/x/oauth2"
 )
 
@@ -51,7 +51,7 @@ func NewOIDCProvider(p *ProviderData, opts options.OIDCOptions) *OIDCProvider {
 
 	return &OIDCProvider{
 		ProviderData: p,
-		SkipNonce:    ptr.Deref(opts.InsecureSkipNonce, options.DefaultInsecureSkipNonce),
+        SkipNonce:    ptr.Deref(opts.InsecureSkipNonce, options.DefaultInsecureSkipNonce),
 	}
 }
 
@@ -111,9 +111,13 @@ func (p *OIDCProvider) EnrichSession(_ context.Context, s *sessions.SessionState
 	return nil
 }
 
-// ValidateSession checks that the session's id_token or access_token (when a ValidateURL is configured) is still valid
+// ValidateSession checks that the session's IDToken is still valid
 func (p *OIDCProvider) ValidateSession(ctx context.Context, s *sessions.SessionState) bool {
-	ctx = oidc.ClientContext(ctx, requests.DefaultHTTPClient)
+    client := p.ProviderData.HTTPClient
+    if client == nil {
+        client = requests.DefaultHTTPClient
+    }
+    ctx = oidc.ClientContext(ctx, client)
 
 	// https://openid.net/specs/openid-connect-core-1_0.html#RefreshTokenResponse
 	// The ID Token is optional in the Refresh Token Response
@@ -159,8 +163,7 @@ func (p *OIDCProvider) RefreshSession(ctx context.Context, s *sessions.SessionSt
 }
 
 // redeemRefreshToken uses a RefreshToken with the RedeemURL to refresh the
-// Access Token and (optionally) the ID Token.
-// https://openid.net/specs/openid-connect-core-1_0.html#RefreshTokenResponse
+// Access Token and (probably) the ID Token.
 func (p *OIDCProvider) redeemRefreshToken(ctx context.Context, s *sessions.SessionState) error {
 	clientSecret, err := p.GetClientSecret()
 	if err != nil {
@@ -188,8 +191,9 @@ func (p *OIDCProvider) redeemRefreshToken(ctx context.Context, s *sessions.Sessi
 		return fmt.Errorf("unable create new session state from response: %v", err)
 	}
 
-	// It's possible that a refresh does not renew the ID Token.
-	// If it doesn't, it's probably better to retain the old one.
+	// It's possible that if the refresh token isn't in the token response the
+	// session will not contain an id token.
+	// If it doesn't it's probably better to retain the old one
 	if newSession.IDToken != "" {
 		s.IDToken = newSession.IDToken
 		s.Email = newSession.Email
@@ -202,7 +206,6 @@ func (p *OIDCProvider) redeemRefreshToken(ctx context.Context, s *sessions.Sessi
 	s.RefreshToken = newSession.RefreshToken
 	s.CreatedAt = newSession.CreatedAt
 	s.ExpiresOn = newSession.ExpiresOn
-	s.Refreshed = newSession.Refreshed
 
 	return nil
 }
@@ -263,7 +266,6 @@ func (p *OIDCProvider) createSession(ctx context.Context, token *oauth2.Token, r
 
 	ss.CreatedAtNow()
 	ss.SetExpiresOn(token.Expiry)
-	ss.Refreshed = refresh
 
 	return ss, nil
 }

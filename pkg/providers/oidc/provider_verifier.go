@@ -7,6 +7,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+    "net/http"
 	"os"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -56,6 +57,9 @@ type ProviderVerifierOptions struct {
 	// SupportedSigningAlgs is the list of signature algorithms supported by the
 	// provider.
 	SupportedSigningAlgs []string
+
+    // HTTPClient is the client to be used for OIDC discovery and JWKs retrieval.
+    HTTPClient *http.Client
 }
 
 // validate checks that the required options are present before attempting to create
@@ -106,7 +110,11 @@ func NewProviderVerifier(ctx context.Context, opts ProviderVerifierOptions) (Pro
 		return nil, fmt.Errorf("invalid provider verifier options: %w", err)
 	}
 
-	verifierBuilder, provider, err := getVerifierBuilder(ctx, opts)
+    if opts.HTTPClient != nil {
+        ctx = oidc.ClientContext(ctx, opts.HTTPClient)
+    }
+
+    verifierBuilder, provider, err := getVerifierBuilder(ctx, opts)
 	if err != nil {
 		return nil, fmt.Errorf("could not get verifier builder: %w", err)
 	}

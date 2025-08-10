@@ -164,8 +164,9 @@ func (p *AzureProvider) Redeem(ctx context.Context, redirectURL, code, codeVerif
 		IDToken      string `json:"id_token"`
 	}
 
-	err = requests.New(p.RedeemURL.String()).
+    err = requests.New(p.RedeemURL.String()).
 		WithContext(ctx).
+        WithClient(p.ProviderData.HTTPClient).
 		WithMethod("POST").
 		WithBody(bytes.NewBufferString(params.Encode())).
 		SetHeader("Content-Type", "application/x-www-form-urlencoded").
@@ -332,8 +333,9 @@ func (p *AzureProvider) redeemRefreshToken(ctx context.Context, s *sessions.Sess
 		IDToken      string `json:"id_token"`
 	}
 
-	err = requests.New(p.RedeemURL.String()).
+    err = requests.New(p.RedeemURL.String()).
 		WithContext(ctx).
+        WithClient(p.ProviderData.HTTPClient).
 		WithMethod("POST").
 		WithBody(bytes.NewBufferString(params.Encode())).
 		SetHeader("Content-Type", "application/x-www-form-urlencoded").
@@ -415,8 +417,9 @@ func (p *AzureProvider) getEmailFromProfileAPI(ctx context.Context, accessToken 
 		return "", fmt.Errorf("missing access token")
 	}
 
-	json, err := requests.New(p.ProfileURL.String()).
+    json, err := requests.New(p.ProfileURL.String()).
 		WithContext(ctx).
+        WithClient(p.ProviderData.HTTPClient).
 		WithHeaders(makeAzureHeader(accessToken)).
 		Do().
 		UnmarshalSimpleJSON()

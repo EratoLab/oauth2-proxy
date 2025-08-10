@@ -2,13 +2,18 @@ package providers
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
+	"net/http"
 	"net/url"
+	"os"
 
 	"github.com/oauth2-proxy/oauth2-proxy/v7/pkg/apis/options"
 	"github.com/oauth2-proxy/oauth2-proxy/v7/pkg/apis/sessions"
 	"github.com/oauth2-proxy/oauth2-proxy/v7/pkg/logger"
 	internaloidc "github.com/oauth2-proxy/oauth2-proxy/v7/pkg/providers/oidc"
+	"github.com/oauth2-proxy/oauth2-proxy/v7/pkg/requests"
+	"github.com/oauth2-proxy/oauth2-proxy/v7/pkg/util"
 	"github.com/oauth2-proxy/oauth2-proxy/v7/pkg/util/ptr"
 	k8serrors "k8s.io/apimachinery/pkg/util/errors"
 )
@@ -87,6 +92,9 @@ func newProviderDataFromConfig(providerConfig options.Provider) (*ProviderData, 
 		AdditionalClaims:        providerConfig.AdditionalClaims,
 	}
 
+	// Build a provider-specific HTTP client if TLS settings or CA files are provided
+	p.HTTPClient = buildProviderHTTPClient(providerConfig)
+
 	needsVerifier, err := providerRequiresOIDCProviderVerifier(providerConfig.Type)
 	if err != nil {
 		return nil, err
@@ -103,6 +111,7 @@ func newProviderDataFromConfig(providerConfig options.Provider) (*ProviderData, 
 			SupportedSigningAlgs:   providerConfig.OIDCConfig.EnabledSigningAlgs,
 			SkipDiscovery:          ptr.Deref(providerConfig.OIDCConfig.SkipDiscovery, options.DefaultSkipDiscovery),
 			SkipIssuerVerification: ptr.Deref(providerConfig.OIDCConfig.InsecureSkipIssuerVerification, options.DefaultInsecureSkipIssuerVerification),
+			HTTPClient:             p.HTTPClient,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("error building OIDC ProviderVerifier: %v", err)
@@ -175,6 +184,60 @@ func newProviderDataFromConfig(providerConfig options.Provider) (*ProviderData, 
 	return p, nil
 }
 
+// buildProviderHTTPClient constructs an HTTP client for provider communications
+// honoring custom CA files and client TLS configuration if provided. If no
+// configuration is provided, it returns the default client.
+func buildProviderHTTPClient(providerConfig options.Provider) *http.Client {
+	hasCAFiles := len(providerConfig.CAFiles) > 0
+	hasTLS := providerConfig.MTLSCertFile != "" && providerConfig.MTLSKeyFile != ""
+	if !hasCAFiles && !hasTLS {
+		return requests.DefaultHTTPClient
+	}
+
+	// Clone the default transport to preserve standard settings
+	baseTransport, ok := requests.DefaultTransport.(*http.Transport)
+	if !ok {
+		return requests.DefaultHTTPClient
+	}
+	transport := baseTransport.Clone()
+
+	tlsConfig := &tls.Config{}
+
+	if hasCAFiles {
+		pool, err := util.GetCertPool(providerConfig.CAFiles, ptr.Deref(providerConfig.UseSystemTrustStore, options.DefaultUseSystemTrustStore))
+		if err == nil {
+			tlsConfig.RootCAs = pool
+			// Default to TLS1.2 minimum for provider communications when custom CAs are used
+			tlsConfig.MinVersion = tls.VersionTLS12
+		} else {
+			logger.Printf("unable to load provider CA file(s): %v", err)
+		}
+	}
+
+	if hasTLS {
+		certData, err1 := os.ReadFile(providerConfig.MTLSCertFile)
+		if err1 != nil {
+			logger.Printf("could not read provider client cert file: %v", err1)
+		} else {
+			keyData, err2 := os.ReadFile(providerConfig.MTLSKeyFile)
+			if err2 != nil {
+				logger.Printf("could not read provider client key file: %v", err2)
+			} else {
+				if cert, err3 := tls.X509KeyPair(certData, keyData); err3 == nil {
+					tlsConfig.Certificates = []tls.Certificate{cert}
+				} else {
+					logger.Printf("could not parse provider client certificate: %v", err3)
+				}
+			}
+		}
+	}
+
+	transport.TLSClientConfig = tlsConfig
+	return requests.NewClient(transport)
+}
+
+// (no helper needed for mTLS file paths)
+
 // Pick the most appropriate code challenge method for PKCE
 // At this time we do not consider what the server supports to be safe and
 // only enable PKCE if the user opts-in
@@ -193,8 +256,7 @@ func providerRequiresOIDCProviderVerifier(providerType options.ProviderType) (bo
 		options.GoogleProvider, options.KeycloakProvider, options.LinkedInProvider, options.LoginGovProvider,
 		options.NextCloudProvider, options.SourceHutProvider:
 		return false, nil
-	case options.OIDCProvider, options.ADFSProvider, options.AzureProvider, options.CidaasProvider,
-		options.GitLabProvider, options.KeycloakOIDCProvider, options.MicrosoftEntraIDProvider:
+	case options.ADFSProvider, options.AzureProvider, options.GitLabProvider, options.KeycloakOIDCProvider, options.OIDCProvider, options.MicrosoftEntraIDProvider:
 		return true, nil
 	default:
 		return false, fmt.Errorf("unknown provider type: %s", providerType)

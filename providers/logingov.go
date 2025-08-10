@@ -153,7 +153,7 @@ type loginGovCustomClaims struct {
 func checkNonce(idToken string, p *LoginGovProvider) (err error) {
 	token, err := jwt.ParseWithClaims(idToken, &loginGovCustomClaims{}, func(_ *jwt.Token) (interface{}, error) {
 		var pubkeys jose.JSONWebKeySet
-		rerr := requests.New(p.PubJWKURL.String()).Do().UnmarshalInto(&pubkeys)
+    rerr := requests.New(p.PubJWKURL.String()).WithClient(p.ProviderData.HTTPClient).Do().UnmarshalInto(&pubkeys)
 		if rerr != nil {
 			return nil, rerr
 		}
@@ -180,7 +180,7 @@ func emailFromUserInfo(ctx context.Context, accessToken string, userInfoEndpoint
 	}
 
 	// query the user info endpoint for user attributes
-	err := requests.New(userInfoEndpoint).
+    err := requests.New(userInfoEndpoint).
 		WithContext(ctx).
 		SetHeader("Authorization", tokenTypeBearer+" "+accessToken).
 		Do().
@@ -235,8 +235,9 @@ func (p *LoginGovProvider) Redeem(ctx context.Context, _, code, codeVerifier str
 		TokenType   string `json:"token_type"`
 		ExpiresIn   int64  `json:"expires_in"`
 	}
-	err = requests.New(p.RedeemURL.String()).
+    err = requests.New(p.RedeemURL.String()).
 		WithContext(ctx).
+        WithClient(p.ProviderData.HTTPClient).
 		WithMethod("POST").
 		WithBody(bytes.NewBufferString(params.Encode())).
 		SetHeader("Content-Type", "application/x-www-form-urlencoded").

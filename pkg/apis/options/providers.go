@@ -139,6 +139,10 @@ type Provider struct {
 
 	// URL to call to perform backend logout, `{id_token}` would be replaced by the actual `id_token` if available in the session
 	BackendLogoutURL string `yaml:"backendLogoutURL"`
+
+	// mTLS client authentication to the identity provider (file paths to PEM-encoded materials)
+	MTLSCertFile string `yaml:"mtlsCertFile,omitempty"`
+	MTLSKeyFile  string `yaml:"mtlsKeyFile,omitempty"`
 }
 
 // ProviderType is used to enumerate the different provider type options
