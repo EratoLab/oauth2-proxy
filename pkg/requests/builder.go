@@ -16,6 +16,7 @@ type Builder interface {
 	WithBody(io.Reader) Builder
 	WithMethod(string) Builder
 	WithHeaders(http.Header) Builder
+    WithClient(*http.Client) Builder
 	SetHeader(key, value string) Builder
 	Do() Result
 }
@@ -27,6 +28,7 @@ type builder struct {
 	body     io.Reader
 	header   http.Header
 	result   *result
+    client   *http.Client
 }
 
 // New provides a new Builder for the given endpoint.
@@ -72,6 +74,13 @@ func (r *builder) SetHeader(key, value string) Builder {
 	return r
 }
 
+// WithClient sets a custom HTTP client to use for executing the request.
+// If not set, a default client will be used.
+func (r *builder) WithClient(client *http.Client) Builder {
+    r.client = client
+    return r
+}
+
 // Do performs the request and returns the response in its raw form.
 // If the request has already been performed, returns the previous result.
 // This will not allow you to repeat a request.
@@ -99,7 +108,11 @@ func (r *builder) do() Result {
 	}
 	req.Header = r.header
 
-	resp, err := DefaultHTTPClient.Do(req)
+    client := r.client
+    if client == nil {
+        client = DefaultHTTPClient
+    }
+    resp, err := client.Do(req)
 	if err != nil {
 		r.result = &result{err: fmt.Errorf("error performing request: %v", err)}
 		return r.result

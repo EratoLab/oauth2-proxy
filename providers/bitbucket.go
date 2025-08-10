@@ -112,8 +112,9 @@ func (p *BitbucketProvider) GetEmailAddress(ctx context.Context, s *sessions.Ses
 	}
 
 	requestURL := p.ValidateURL.String() + "?access_token=" + s.AccessToken
-	err := requests.New(requestURL).
+    err := requests.New(requestURL).
 		WithContext(ctx).
+        WithClient(p.ProviderData.HTTPClient).
 		Do().
 		UnmarshalInto(&emails)
 	if err != nil {
@@ -128,8 +129,9 @@ func (p *BitbucketProvider) GetEmailAddress(ctx context.Context, s *sessions.Ses
 
 		requestURL := teamURL.String() + "?role=member&access_token=" + s.AccessToken
 
-		err := requests.New(requestURL).
+        err := requests.New(requestURL).
 			WithContext(ctx).
+            WithClient(p.ProviderData.HTTPClient).
 			Do().
 			UnmarshalInto(&teams)
 		if err != nil {
@@ -158,8 +160,9 @@ func (p *BitbucketProvider) GetEmailAddress(ctx context.Context, s *sessions.Ses
 			"&q=full_name=" + url.QueryEscape("\""+p.Repository+"\"") +
 			"&access_token=" + s.AccessToken
 
-		err := requests.New(requestURL).
+        err := requests.New(requestURL).
 			WithContext(ctx).
+            WithClient(p.ProviderData.HTTPClient).
 			Do().
 			UnmarshalInto(&repositories)
 		if err != nil {

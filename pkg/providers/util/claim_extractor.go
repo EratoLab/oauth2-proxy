@@ -29,6 +29,11 @@ type ClaimExtractor interface {
 // If needed, it will use the profile URL to look up a claim if it isn't present
 // within the ID Token.
 func NewClaimExtractor(ctx context.Context, idToken string, profileURL *url.URL, profileRequestHeaders http.Header) (ClaimExtractor, error) {
+    return NewClaimExtractorWithClient(ctx, idToken, profileURL, profileRequestHeaders, requests.DefaultHTTPClient)
+}
+
+// NewClaimExtractorWithClient is like NewClaimExtractor but allows specifying an HTTP client to use for profile URL requests.
+func NewClaimExtractorWithClient(ctx context.Context, idToken string, profileURL *url.URL, profileRequestHeaders http.Header, client *http.Client) (ClaimExtractor, error) {
 	payload, err := parseJWT(idToken)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse ID Token: %v", err)
@@ -39,12 +44,13 @@ func NewClaimExtractor(ctx context.Context, idToken string, profileURL *url.URL,
 		return nil, fmt.Errorf("failed to parse ID Token payload: %v", err)
 	}
 
-	return &claimExtractor{
+    return &claimExtractor{
 		ctx:            ctx,
 		profileURL:     profileURL,
 		requestHeaders: profileRequestHeaders,
 		tokenClaims:    tokenClaims,
-	}, nil
+        httpClient:     client,
+    }, nil
 }
 
 // claimExtractor implements the ClaimExtractor interface
@@ -54,6 +60,7 @@ type claimExtractor struct {
 	requestHeaders map[string][]string
 	tokenClaims    *simplejson.Json
 	profileClaims  *simplejson.Json
+    httpClient     *http.Client
 }
 
 // GetClaim will return the value claim if it exists.
@@ -95,24 +102,27 @@ func (c *claimExtractor) loadProfileClaims() (*simplejson.Json, error) {
 		return simplejson.New(), nil
 	}
 
-	builder := requests.New(c.profileURL.String()).
-		WithContext(c.ctx).
-		WithHeaders(c.requestHeaders).
-		Do()
+    reqBuilder := requests.New(c.profileURL.String()).
+        WithContext(c.ctx).
+        WithHeaders(c.requestHeaders)
+    if c.httpClient != nil {
+        reqBuilder = reqBuilder.WithClient(c.httpClient)
+    }
+    result := reqBuilder.Do()
 
 	// We first check if the result is a JWT token
 	// https://openid.net/specs/openid-connect-core-1_0-final.html#UserInfoResponse
-	mediaType, _, parseErr := mime.ParseMediaType(builder.Headers().Get("Content-Type"))
+    mediaType, _, parseErr := mime.ParseMediaType(result.Headers().Get("Content-Type"))
 
 	if parseErr == nil && mediaType == "application/jwt" {
 		// Decode and use JWT payload as profile claims
-		if pl, err := parseJWT(string(builder.Body())); err == nil {
+        if pl, err := parseJWT(string(result.Body())); err == nil {
 			return simplejson.NewJson(pl)
 		}
 	}
 
 	// Otherwise, process as normal JSON payload
-	claims, err := builder.UnmarshalSimpleJSON()
+    claims, err := result.UnmarshalSimpleJSON()
 
 	if err != nil {
 		return nil, fmt.Errorf("error making request to profile URL: %v", err)

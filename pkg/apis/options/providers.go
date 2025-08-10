@@ -92,8 +92,12 @@ type Provider struct {
 	// The code challenge method
 	CodeChallengeMethod string `json:"code_challenge_method,omitempty"`
 
-	// URL to call to perform backend logout, `{id_token}` would be replaced by the actual `id_token` if available in the session
-	BackendLogoutURL string `json:"backendLogoutURL"`
+    // URL to call to perform backend logout, `{id_token}` would be replaced by the actual `id_token` if available in the session
+    BackendLogoutURL string `json:"backendLogoutURL"`
+
+    // mTLS client authentication to the identity provider (file paths to PEM-encoded materials)
+    MTLSCertFile string `json:"mtlsCertFile,omitempty"`
+    MTLSKeyFile  string `json:"mtlsKeyFile,omitempty"`
 }
 
 // ProviderType is used to enumerate the different provider type options

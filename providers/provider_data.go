@@ -16,6 +16,7 @@ import (
 	"github.com/oauth2-proxy/oauth2-proxy/v7/pkg/logger"
 	internaloidc "github.com/oauth2-proxy/oauth2-proxy/v7/pkg/providers/oidc"
 	"github.com/oauth2-proxy/oauth2-proxy/v7/pkg/providers/util"
+    "github.com/oauth2-proxy/oauth2-proxy/v7/pkg/requests"
 	"golang.org/x/oauth2"
 )
 
@@ -61,6 +62,10 @@ type ProviderData struct {
 	loginURLParameterOverrides map[string]*regexp.Regexp
 
 	BackendLogoutURL string
+
+    // HTTPClient is the client to be used for all outbound provider requests
+    // (token exchange, userinfo, OIDC discovery/JWKS via verifier, etc.)
+    HTTPClient *http.Client
 }
 
 // Data returns the ProviderData
@@ -293,7 +298,11 @@ func (p *ProviderData) getClaimExtractor(rawIDToken, accessToken string) (util.C
 		profileURL = &url.URL{}
 	}
 
-	extractor, err := util.NewClaimExtractor(context.TODO(), rawIDToken, profileURL, p.getAuthorizationHeader(accessToken))
+    client := p.HTTPClient
+    if client == nil {
+        client = requests.DefaultHTTPClient
+    }
+    extractor, err := util.NewClaimExtractorWithClient(context.TODO(), rawIDToken, profileURL, p.getAuthorizationHeader(accessToken), client)
 	if err != nil {
 		return nil, fmt.Errorf("could not initialise claim extractor: %v", err)
 	}

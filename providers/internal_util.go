@@ -60,8 +60,9 @@ func validateToken(ctx context.Context, p Provider, accessToken string, header h
 		}
 	}
 
-	result := requests.New(endpoint).
+    result := requests.New(endpoint).
 		WithContext(ctx).
+        WithClient(p.Data().HTTPClient).
 		WithHeaders(header).
 		Do()
 	if result.Error() != nil {

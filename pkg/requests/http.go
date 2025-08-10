@@ -29,3 +29,14 @@ func setDefaultUserAgent(header http.Header, userAgent string) {
 		header.Set("User-Agent", userAgent)
 	}
 }
+
+// NewClient returns an http.Client that sets a default User-Agent and uses the provided transport.
+func NewClient(transport http.RoundTripper) *http.Client {
+    if transport == nil {
+        transport = DefaultTransport
+    }
+    return &http.Client{Transport: &userAgentTransport{
+        next:      transport,
+        userAgent: "oauth2-proxy/" + version.VERSION,
+    }}
+}

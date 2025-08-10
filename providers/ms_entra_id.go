@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+    "encoding/base64"
 	"fmt"
 	"net/url"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
+    jwt "github.com/golang-jwt/jwt/v5"
 	"github.com/oauth2-proxy/oauth2-proxy/v7/pkg/apis/options"
 	"github.com/oauth2-proxy/oauth2-proxy/v7/pkg/apis/sessions"
 	"github.com/oauth2-proxy/oauth2-proxy/v7/pkg/logger"
@@ -18,6 +20,12 @@ import (
 	"github.com/oauth2-proxy/oauth2-proxy/v7/pkg/util"
 	"github.com/spf13/cast"
 	"golang.org/x/oauth2"
+    "crypto/x509"
+    "crypto/rsa"
+    "crypto/sha256"
+    "encoding/pem"
+    "crypto/rand"
+    "encoding/hex"
 )
 
 // MicrosoftEntraIDProvider represents provider for Azure Entra Authentication V2 endpoint
@@ -27,6 +35,10 @@ type MicrosoftEntraIDProvider struct {
 	federatedTokenAuth        bool
 
 	microsoftGraphURL *url.URL
+
+    // mTLS cert/key files for private_key_jwt client assertion
+    mtlsCertFile string
+    mtlsKeyFile  string
 }
 
 const (
@@ -47,13 +59,24 @@ func NewMicrosoftEntraIDProvider(p *ProviderData, opts options.Provider) *Micros
 		name: microsoftEntraIDProviderName,
 	})
 
-	return &MicrosoftEntraIDProvider{
+    provider := &MicrosoftEntraIDProvider{
 		OIDCProvider: NewOIDCProvider(p, opts.OIDCConfig),
 
 		multiTenantAllowedTenants: opts.MicrosoftEntraIDConfig.AllowedTenants,
 		federatedTokenAuth:        opts.MicrosoftEntraIDConfig.FederatedTokenAuth,
 		microsoftGraphURL:         microsoftGraphURL,
-	}
+        mtlsCertFile:              opts.MTLSCertFile,
+        mtlsKeyFile:               opts.MTLSKeyFile,
+    }
+
+    // Pre-validate client assertion if mTLS certificate configuration is provided
+    if provider.hasClientAssertionConfig() {
+        if _, err := provider.buildClientAssertion(); err != nil {
+            logger.Errorf("entra: client assertion precheck failed: %v", err)
+        }
+    }
+
+    return provider
 }
 
 // EnrichSession checks for group overage after calling generic EnrichSession
@@ -102,8 +125,10 @@ func (p *MicrosoftEntraIDProvider) Redeem(ctx context.Context, redirectURL, code
 	if p.federatedTokenAuth {
 		return p.redeemWithFederatedToken(ctx, redirectURL, code, codeVerifier)
 	}
-
-	return p.OIDCProvider.Redeem(ctx, redirectURL, code, codeVerifier)
+    if p.hasClientAssertionConfig() {
+        return p.redeemWithClientAssertion(ctx, redirectURL, code, codeVerifier)
+    }
+    return p.OIDCProvider.Redeem(ctx, redirectURL, code, codeVerifier)
 }
 
 // redeemWithFederatedToken performs custom token exchange with federated token instead of client secret
@@ -143,10 +168,16 @@ func (p *MicrosoftEntraIDProvider) RefreshSession(ctx context.Context, s *sessio
 	}
 
 	var err error
-	ctx = oidc.ClientContext(ctx, requests.DefaultHTTPClient)
-	if p.federatedTokenAuth {
+    client := p.ProviderData.HTTPClient
+    if client == nil {
+        client = requests.DefaultHTTPClient
+    }
+    ctx = oidc.ClientContext(ctx, client)
+    if p.federatedTokenAuth {
 		err = p.redeemRefreshTokenWithFederatedToken(ctx, s)
-	} else {
+    } else if p.hasClientAssertionConfig() {
+        err = p.redeemRefreshTokenWithClientAssertion(ctx, s)
+    } else {
 		err = p.redeemRefreshToken(ctx, s)
 	}
 
@@ -155,6 +186,151 @@ func (p *MicrosoftEntraIDProvider) RefreshSession(ctx context.Context, s *sessio
 	}
 
 	return true, nil
+}
+
+// hasClientAssertionConfig indicates whether certificate-based client assertion is configured
+func (p *MicrosoftEntraIDProvider) hasClientAssertionConfig() bool {
+    return p.mtlsCertFile != "" && p.mtlsKeyFile != ""
+}
+
+// redeemWithClientAssertion performs token exchange using private_key_jwt client assertion
+func (p *MicrosoftEntraIDProvider) redeemWithClientAssertion(ctx context.Context, redirectURL, code, codeVerifier string) (*sessions.SessionState, error) {
+    assertion, err := p.buildClientAssertion()
+    if err != nil {
+        return nil, fmt.Errorf("unable to build client assertion: %w", err)
+    }
+
+    params := url.Values{}
+    if codeVerifier != "" {
+        params.Add("code_verifier", codeVerifier)
+    }
+    params.Add("redirect_uri", redirectURL)
+    params.Add("client_id", p.ClientID)
+    params.Add("client_assertion", assertion)
+    params.Add("client_assertion_type", "urn:ietf:params:oauth:client-assertion-type:jwt-bearer")
+    params.Add("code", code)
+    params.Add("grant_type", "authorization_code")
+
+    token, err := p.fetchToken(ctx, params)
+    if err != nil {
+        return nil, fmt.Errorf("error fetching token: %w", err)
+    }
+
+    return p.OIDCProvider.createSession(ctx, token, false)
+}
+
+// redeemRefreshTokenWithClientAssertion refreshes tokens using private_key_jwt client assertion
+func (p *MicrosoftEntraIDProvider) redeemRefreshTokenWithClientAssertion(ctx context.Context, s *sessions.SessionState) error {
+    assertion, err := p.buildClientAssertion()
+    if err != nil {
+        return fmt.Errorf("unable to build client assertion: %w", err)
+    }
+
+    params := url.Values{}
+    params.Add("client_id", p.ClientID)
+    params.Add("client_assertion", assertion)
+    params.Add("client_assertion_type", "urn:ietf:params:oauth:client-assertion-type:jwt-bearer")
+    params.Add("refresh_token", s.RefreshToken)
+    params.Add("grant_type", "refresh_token")
+    params.Add("expiry", time.Now().Add(-time.Hour).Format(time.RFC3339))
+
+    token, err := p.fetchToken(ctx, params)
+    if err != nil {
+        return fmt.Errorf("error fetching token: %w", err)
+    }
+
+    newSession, err := p.OIDCProvider.createSession(ctx, token, true)
+    if err != nil {
+        return fmt.Errorf("unable create new session state from response: %v", err)
+    }
+
+    if newSession.IDToken != "" {
+        s.IDToken = newSession.IDToken
+        s.Email = newSession.Email
+        s.User = newSession.User
+        s.Groups = newSession.Groups
+        s.PreferredUsername = newSession.PreferredUsername
+    }
+    s.AccessToken = newSession.AccessToken
+    s.RefreshToken = newSession.RefreshToken
+    s.CreatedAt = newSession.CreatedAt
+    s.ExpiresOn = newSession.ExpiresOn
+    return nil
+}
+
+// buildClientAssertion creates a PS256-signed JWT with x5t#S256 header for private_key_jwt
+func (p *MicrosoftEntraIDProvider) buildClientAssertion() (string, error) {
+    // Read cert
+    certPEM, err := os.ReadFile(p.mtlsCertFile)
+    if err != nil {
+        return "", fmt.Errorf("could not read mtls cert file: %w", err)
+    }
+    var certBlock *pem.Block
+    certBlock, _ = pem.Decode(certPEM)
+    if certBlock == nil || certBlock.Type != "CERTIFICATE" {
+        return "", fmt.Errorf("invalid certificate PEM")
+    }
+    cert, err := x509.ParseCertificate(certBlock.Bytes)
+    if err != nil {
+        return "", fmt.Errorf("could not parse certificate: %w", err)
+    }
+
+    // Compute x5t#S256
+    thumb := sha256.Sum256(cert.Raw)
+    x5tS256 := base64.RawURLEncoding.EncodeToString(thumb[:])
+
+    // Read private key (support PKCS8 or PKCS1 RSA)
+    keyPEM, err := os.ReadFile(p.mtlsKeyFile)
+    if err != nil {
+        return "", fmt.Errorf("could not read mtls key file: %w", err)
+    }
+    var keyBlock *pem.Block
+    keyBlock, _ = pem.Decode(keyPEM)
+    if keyBlock == nil {
+        return "", fmt.Errorf("invalid key PEM")
+    }
+    var rsaKey *rsa.PrivateKey
+    if k, err := x509.ParsePKCS1PrivateKey(keyBlock.Bytes); err == nil {
+        rsaKey = k
+    } else {
+        pk, err2 := x509.ParsePKCS8PrivateKey(keyBlock.Bytes)
+        if err2 != nil {
+            return "", fmt.Errorf("could not parse private key: %w", err2)
+        }
+        var ok bool
+        rsaKey, ok = pk.(*rsa.PrivateKey)
+        if !ok {
+            return "", fmt.Errorf("private key is not RSA")
+        }
+    }
+
+    // Claims
+    now := time.Now()
+    jtiBytes := make([]byte, 16)
+    if _, err := rand.Read(jtiBytes); err != nil {
+        return "", fmt.Errorf("could not generate jti: %w", err)
+    }
+    jti := hex.EncodeToString(jtiBytes)
+
+    claims := jwt.RegisteredClaims{
+        Issuer:    p.ClientID,
+        Subject:   p.ClientID,
+        Audience:  []string{p.RedeemURL.String()},
+        IssuedAt:  jwt.NewNumericDate(now),
+        NotBefore: jwt.NewNumericDate(now),
+        ExpiresAt: jwt.NewNumericDate(now.Add(5 * time.Minute)),
+        ID:        jti,
+    }
+
+    token := jwt.NewWithClaims(jwt.SigningMethodPS256, claims)
+    // Set x5t#S256 header as required
+    token.Header["x5t#S256"] = x5tS256
+
+    assertion, err := token.SignedString(rsaKey)
+    if err != nil {
+        return "", fmt.Errorf("could not sign client assertion: %w", err)
+    }
+    return assertion, nil
 }
 
 // redeemRefreshTokenWithFederatedToken uses a RefreshToken and federated credentials with the RedeemURL to refresh the
@@ -236,8 +412,9 @@ func (p *MicrosoftEntraIDProvider) addGraphGroupsToSession(ctx context.Context, 
 			nextLink = fmt.Sprintf("%s/transitiveMemberOf?$select=id&$top=100", p.microsoftGraphURL)
 		}
 
-		response, err := requests.New(nextLink).
+        response, err := requests.New(nextLink).
 			WithContext(ctx).
+            WithClient(p.ProviderData.HTTPClient).
 			WithHeaders(groupsHeaders).
 			Do().
 			UnmarshalSimpleJSON()
@@ -299,8 +476,9 @@ func (p *MicrosoftEntraIDProvider) checkTenantMatchesTenantList(tenant string, a
 }
 
 func (p *MicrosoftEntraIDProvider) fetchToken(ctx context.Context, params url.Values) (*oauth2.Token, error) {
-	resp := requests.New(p.RedeemURL.String()).
+    resp := requests.New(p.RedeemURL.String()).
 		WithContext(ctx).
+        WithClient(p.ProviderData.HTTPClient).
 		WithMethod("POST").
 		WithBody(bytes.NewBufferString(params.Encode())).
 		SetHeader("Content-Type", "application/x-www-form-urlencoded").

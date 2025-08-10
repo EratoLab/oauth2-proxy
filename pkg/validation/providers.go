@@ -78,15 +78,15 @@ func providerRequiresClientSecret(provider options.Provider) bool {
 func validateClientSecret(provider options.Provider) []string {
 	msgs := []string{}
 
-	if provider.ClientSecret == "" && provider.ClientSecretFile == "" {
-		msgs = append(msgs, "missing setting: client-secret or client-secret-file")
-	}
-	if provider.ClientSecret == "" && provider.ClientSecretFile != "" {
-		_, err := os.ReadFile(provider.ClientSecretFile)
-		if err != nil {
-			msgs = append(msgs, "could not read client secret file: "+provider.ClientSecretFile)
-		}
-	}
+	// if provider.ClientSecret == "" && provider.ClientSecretFile == "" {
+	// 	msgs = append(msgs, "missing setting: client-secret or client-secret-file")
+	// }
+	// if provider.ClientSecret == "" && provider.ClientSecretFile != "" {
+	// 	_, err := os.ReadFile(provider.ClientSecretFile)
+	// 	if err != nil {
+	// 		msgs = append(msgs, "could not read client secret file: "+provider.ClientSecretFile)
+	// 	}
+	// }
 
 	return msgs
 }

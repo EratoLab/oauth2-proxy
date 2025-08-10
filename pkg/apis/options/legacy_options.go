@@ -538,6 +538,10 @@ type LegacyProvider struct {
 	AllowedRoles                       []string `flag:"allowed-role" cfg:"allowed_roles"`
 	BackendLogoutURL                   string   `flag:"backend-logout-url" cfg:"backend_logout_url"`
 
+    // mTLS client authentication to the identity provider (file paths to PEM-encoded materials)
+    MTLSCertFile string `flag:"provider-mtls-cert-file" cfg:"provider_mtls_cert_file"`
+    MTLSKeyFile  string `flag:"provider-mtls-key-file" cfg:"provider_mtls_key_file"`
+
 	AcrValues  string `flag:"acr-values" cfg:"acr_values"`
 	JWTKey     string `flag:"jwt-key" cfg:"jwt_key"`
 	JWTKeyFile string `flag:"jwt-key-file" cfg:"jwt_key_file"`
@@ -606,6 +610,10 @@ func legacyProviderFlagSet() *pflag.FlagSet {
 	flagSet.StringSlice("allowed-group", []string{}, "restrict logins to members of this group (may be given multiple times)")
 	flagSet.StringSlice("allowed-role", []string{}, "(keycloak-oidc) restrict logins to members of these roles (may be given multiple times)")
 	flagSet.String("backend-logout-url", "", "url to perform a backend logout, {id_token} can be used as placeholder for the id_token")
+
+    // mTLS client authentication flags
+    flagSet.String("provider-mtls-cert-file", "", "path to client certificate file used for mTLS when connecting to the provider")
+    flagSet.String("provider-mtls-key-file", "", "path to client private key file used for mTLS when connecting to the provider")
 
 	return flagSet
 }
@@ -688,6 +696,10 @@ func (l *LegacyProvider) convert() (Providers, error) {
 		BackendLogoutURL:         l.BackendLogoutURL,
 		AuthRequestResponseMode:  l.AuthRequestResponseMode,
 	}
+
+    // mTLS files
+    provider.MTLSCertFile = l.MTLSCertFile
+    provider.MTLSKeyFile = l.MTLSKeyFile
 
 	// This part is out of the switch section for all providers that support OIDC
 	provider.OIDCConfig = OIDCOptions{
