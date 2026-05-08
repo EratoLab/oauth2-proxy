@@ -30,7 +30,7 @@ GOLANGCILINT ?= golangci-lint
 BINARY := oauth2-proxy
 VERSION ?= $(shell git describe --always --dirty --tags 2>/dev/null || echo "undefined")
 # Allow to override image registry.
-REGISTRY   ?= quay.io/oauth2-proxy
+REGISTRY   ?= harbor.imassage.me/erato
 REPOSITORY ?= oauth2-proxy
 
 DATE := $(shell date +"%Y%m%d")
@@ -57,7 +57,7 @@ $(BINARY):
 
 DOCKER_BUILDX_COMMON_ARGS     ?= --build-arg BUILD_IMAGE=docker.io/library/golang:$(GO_MOD_VERSION_MINOR)-bookworm --build-arg VERSION=$(VERSION)
 
-DOCKER_BUILD_PLATFORM         ?= linux/amd64,linux/arm64,linux/ppc64le,linux/arm/v7,linux/s390x
+DOCKER_BUILD_PLATFORM         ?= linux/amd64,linux/arm64
 DOCKER_BUILD_RUNTIME_IMAGE    ?= gcr.io/distroless/static:nonroot
 DOCKER_BUILDX_ARGS            ?= --build-arg RUNTIME_IMAGE=${DOCKER_BUILD_RUNTIME_IMAGE} ${DOCKER_BUILDX_COMMON_ARGS}
 DOCKER_BUILDX                 := docker buildx build ${DOCKER_BUILDX_ARGS} --pull
@@ -65,8 +65,9 @@ DOCKER_BUILDX_X_PLATFORM      := $(DOCKER_BUILDX) --platform ${DOCKER_BUILD_PLAT
 DOCKER_BUILDX_PUSH            := $(DOCKER_BUILDX) --push
 DOCKER_BUILDX_PUSH_X_PLATFORM := $(DOCKER_BUILDX_PUSH) --platform ${DOCKER_BUILD_PLATFORM}
 
-DOCKER_BUILD_PLATFORM_ALPINE         ?= linux/amd64,linux/arm64,linux/ppc64le,linux/arm/v6,linux/arm/v7,linux/s390x
-DOCKER_BUILD_RUNTIME_IMAGE_ALPINE    ?= alpine:3.23.3
+DOCKER_BUILD_PLATFORM_ALPINE         ?= linux/amd64,linux/arm64
+DOCKER_BUILD_RUNTIME_IMAGE_ALPINE    ?= alpine:3.23.2
+
 DOCKER_BUILDX_ARGS_ALPINE            ?= --build-arg RUNTIME_IMAGE=${DOCKER_BUILD_RUNTIME_IMAGE_ALPINE} ${DOCKER_BUILDX_COMMON_ARGS}
 DOCKER_BUILDX_X_PLATFORM_ALPINE      := docker buildx build ${DOCKER_BUILDX_ARGS_ALPINE} --platform ${DOCKER_BUILD_PLATFORM_ALPINE}
 DOCKER_BUILDX_PUSH_X_PLATFORM_ALPINE := $(DOCKER_BUILDX_X_PLATFORM_ALPINE) --push
@@ -87,12 +88,30 @@ build-alpine: ## Build multi architecture alpine based docker image
 	$(DOCKER_BUILDX_X_PLATFORM_ALPINE) -t $(REGISTRY)/$(REPOSITORY):latest-alpine -t $(REGISTRY)/$(REPOSITORY):${VERSION}-alpine .
 
 .PHONY: build-docker-all
-build-docker-all: build-docker ## Build docker images for all supported architectures in both flavours (distroless / alpine)
-	$(DOCKER_BUILDX) --platform linux/amd64   -t $(REGISTRY)/$(REPOSITORY):latest-amd64   -t $(REGISTRY)/$(REPOSITORY):${VERSION}-amd64 .
-	$(DOCKER_BUILDX) --platform linux/arm64   -t $(REGISTRY)/$(REPOSITORY):latest-arm64   -t $(REGISTRY)/$(REPOSITORY):${VERSION}-arm64 .
-	$(DOCKER_BUILDX) --platform linux/ppc64le -t $(REGISTRY)/$(REPOSITORY):latest-ppc64le -t $(REGISTRY)/$(REPOSITORY):${VERSION}-ppc64le .
-	$(DOCKER_BUILDX) --platform linux/arm/v7  -t $(REGISTRY)/$(REPOSITORY):latest-armv7   -t $(REGISTRY)/$(REPOSITORY):${VERSION}-armv7 .
-	$(DOCKER_BUILDX) --platform linux/s390x   -t $(REGISTRY)/$(REPOSITORY):latest-s390x -t $(REGISTRY)/$(REPOSITORY):${VERSION}-s390x .
+build-docker-all: ## Build docker images for all supported architectures in both flavours (distroless / alpine) and create multi-platform manifests
+	# Build single-platform distroless images
+	$(DOCKER_BUILDX_PUSH) --platform linux/amd64   -t $(REGISTRY)/$(REPOSITORY):latest-amd64   -t $(REGISTRY)/$(REPOSITORY):${VERSION}-amd64 .
+	$(DOCKER_BUILDX_PUSH) --platform linux/arm64   -t $(REGISTRY)/$(REPOSITORY):latest-arm64   -t $(REGISTRY)/$(REPOSITORY):${VERSION}-arm64 .
+	# Build single-platform alpine images
+	$(DOCKER_BUILDX_PUSH) --platform linux/amd64 ${DOCKER_BUILDX_ARGS_ALPINE} -t $(REGISTRY)/$(REPOSITORY):latest-alpine-amd64 -t $(REGISTRY)/$(REPOSITORY):${VERSION}-alpine-amd64 .
+	$(DOCKER_BUILDX_PUSH) --platform linux/arm64 ${DOCKER_BUILDX_ARGS_ALPINE} -t $(REGISTRY)/$(REPOSITORY):latest-alpine-arm64 -t $(REGISTRY)/$(REPOSITORY):${VERSION}-alpine-arm64 .
+	# Create multi-platform manifests for distroless images
+	docker buildx imagetools create -t $(REGISTRY)/$(REPOSITORY):latest \
+		$(REGISTRY)/$(REPOSITORY):latest-amd64 \
+		$(REGISTRY)/$(REPOSITORY):latest-arm64
+	docker buildx imagetools create -t $(REGISTRY)/$(REPOSITORY):${VERSION} \
+		$(REGISTRY)/$(REPOSITORY):${VERSION}-amd64 \
+		$(REGISTRY)/$(REPOSITORY):${VERSION}-arm64
+	docker buildx imagetools create -t $(REGISTRY)/$(REPOSITORY):${VERSION}-erato \
+		$(REGISTRY)/$(REPOSITORY):${VERSION}-amd64 \
+		$(REGISTRY)/$(REPOSITORY):${VERSION}-arm64
+	# Create multi-platform manifests for alpine images
+	docker buildx imagetools create -t $(REGISTRY)/$(REPOSITORY):latest-alpine \
+		$(REGISTRY)/$(REPOSITORY):latest-alpine-amd64 \
+		$(REGISTRY)/$(REPOSITORY):latest-alpine-arm64
+	docker buildx imagetools create -t $(REGISTRY)/$(REPOSITORY):${VERSION}-alpine \
+		$(REGISTRY)/$(REPOSITORY):${VERSION}-alpine-amd64 \
+		$(REGISTRY)/$(REPOSITORY):${VERSION}-alpine-arm64
 
 .PHONY: build-docker-arm64
 build-docker-arm64: ##
@@ -115,9 +134,6 @@ push-alpine: ## Push multi architecture alpine based docker image
 push-docker-all: push-docker ## Push docker images for all supported architectures for both flavours (distroless / alpine)
 	$(DOCKER_BUILDX_PUSH) --platform linux/amd64   -t $(REGISTRY)/$(REPOSITORY):latest-amd64   -t $(REGISTRY)/$(REPOSITORY):${VERSION}-amd64 .
 	$(DOCKER_BUILDX_PUSH) --platform linux/arm64   -t $(REGISTRY)/$(REPOSITORY):latest-arm64   -t $(REGISTRY)/$(REPOSITORY):${VERSION}-arm64 .
-	$(DOCKER_BUILDX_PUSH) --platform linux/ppc64le -t $(REGISTRY)/$(REPOSITORY):latest-ppc64le -t $(REGISTRY)/$(REPOSITORY):${VERSION}-ppc64le .
-	$(DOCKER_BUILDX_PUSH) --platform linux/arm/v7  -t $(REGISTRY)/$(REPOSITORY):latest-armv7   -t $(REGISTRY)/$(REPOSITORY):${VERSION}-armv7 .
-	$(DOCKER_BUILDX_PUSH) --platform linux/s390x   -t $(REGISTRY)/$(REPOSITORY):latest-s390x -t $(REGISTRY)/$(REPOSITORY):${VERSION}-s390x .
 
 
 ##@ Nightly scheduling
