@@ -187,6 +187,10 @@ func (p *MicrosoftEntraIDProvider) RefreshSession(ctx context.Context, s *sessio
 		return false, fmt.Errorf("unable to redeem refresh token: %v", err)
 	}
 
+	if err := p.EnrichSession(ctx, s); err != nil {
+		return false, fmt.Errorf("unable to enrich refreshed session: %v", err)
+	}
+
 	return true, nil
 }
 
