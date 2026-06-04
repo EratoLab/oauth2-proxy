@@ -51,6 +51,7 @@ const (
 	signOutPath       = "/sign_out"
 	oauthStartPath    = "/start"
 	oauthCallbackPath = "/callback"
+	externalTokenPath = "/redeem-external-token"
 	authOnlyPath      = "/auth"
 	userInfoPath      = "/userinfo"
 	staticPathPrefix  = "/static/"
@@ -80,6 +81,11 @@ type allowedRoute struct {
 
 type apiRoute struct {
 	pathRegex *regexp.Regexp
+}
+
+type externalTokenRedeemRequest struct {
+	IDToken     string `json:"id_token"`
+	AccessToken string `json:"access_token,omitempty"`
 }
 
 // OAuthProxy is the main authentication proxy
@@ -346,6 +352,7 @@ func (p *OAuthProxy) buildProxySubrouter(s *mux.Router) {
 	s.Path(signInPath).HandlerFunc(p.SignIn)
 	s.Path(oauthStartPath).HandlerFunc(p.OAuthStart)
 	s.Path(oauthCallbackPath).HandlerFunc(p.OAuthCallback)
+	s.Path(externalTokenPath).HandlerFunc(p.RedeemExternalToken)
 
 	// Static file paths
 	s.PathPrefix(staticPathPrefix).Handler(http.StripPrefix(p.ProxyPrefix, http.FileServer(http.FS(staticFiles))))
@@ -974,6 +981,82 @@ func (p *OAuthProxy) OAuthCallback(rw http.ResponseWriter, req *http.Request) {
 		logger.PrintAuthf(session.Email, req, logger.AuthFailure, "Invalid authentication via OAuth2: unauthorized")
 		p.ErrorPage(rw, req, http.StatusForbidden, "Invalid session: unauthorized")
 	}
+}
+
+// RedeemExternalToken converts an externally acquired ID token and optional
+// access token into an oauth2-proxy session cookie.
+func (p *OAuthProxy) RedeemExternalToken(rw http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodPost {
+		rw.Header().Set("Allow", http.MethodPost)
+		http.Error(rw, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+		return
+	}
+
+	if !isJSONContentType(req.Header.Get("Content-Type")) {
+		http.Error(rw, http.StatusText(http.StatusUnsupportedMediaType), http.StatusUnsupportedMediaType)
+		return
+	}
+
+	req.Body = http.MaxBytesReader(rw, req.Body, 1024*1024)
+	var tokenRequest externalTokenRedeemRequest
+	decoder := json.NewDecoder(req.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&tokenRequest); err != nil {
+		logger.Errorf("Error parsing external token redemption request: %v", err)
+		http.Error(rw, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+		return
+	}
+
+	tokenRequest.IDToken = strings.TrimSpace(tokenRequest.IDToken)
+	tokenRequest.AccessToken = strings.TrimSpace(tokenRequest.AccessToken)
+	if tokenRequest.IDToken == "" {
+		http.Error(rw, "missing id_token", http.StatusBadRequest)
+		return
+	}
+
+	session, err := p.provider.CreateSessionFromExternalToken(req.Context(), tokenRequest.IDToken, tokenRequest.AccessToken)
+	if err != nil {
+		if errors.Is(err, providers.ErrNotImplemented) {
+			http.Error(rw, "external token redemption is not supported by this provider", http.StatusNotImplemented)
+			return
+		}
+		logger.Errorf("Error redeeming external token: %v", err)
+		http.Error(rw, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
+		return
+	}
+
+	if err := p.enrichSessionState(req.Context(), session); err != nil {
+		logger.Errorf("Error enriching external token session: %v", err)
+		http.Error(rw, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
+		return
+	}
+
+	authorized, err := p.provider.Authorize(req.Context(), session)
+	if err != nil {
+		logger.Errorf("Error with authorization: %v", err)
+	}
+	if !p.Validator(session.Email) || !authorized {
+		logger.PrintAuthf(session.Email, req, logger.AuthFailure, "Invalid authentication via external token: unauthorized")
+		http.Error(rw, http.StatusText(http.StatusForbidden), http.StatusForbidden)
+		return
+	}
+
+	if err := p.SaveSession(rw, req, session); err != nil {
+		remoteAddr := ip.GetClientString(p.realClientIPParser, req, true)
+		logger.Errorf("Error saving external token session state for %s: %v", remoteAddr, err)
+		http.Error(rw, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+
+	logger.PrintAuthf(session.Email, req, logger.AuthSuccess, "Authenticated via external token: %s", session)
+	rw.Header().Set("Content-Type", applicationJSON)
+	rw.WriteHeader(http.StatusAccepted)
+	_, _ = rw.Write([]byte("{}"))
+}
+
+func isJSONContentType(contentType string) bool {
+	mediaType := strings.ToLower(strings.TrimSpace(strings.Split(contentType, ";")[0]))
+	return mediaType == applicationJSON
 }
 
 func (p *OAuthProxy) redeemCode(req *http.Request, codeVerifier string) (*sessionsapi.SessionState, error) {

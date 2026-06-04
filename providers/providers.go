@@ -35,6 +35,7 @@ type Provider interface {
 	ValidateSession(ctx context.Context, s *sessions.SessionState) bool
 	RefreshSession(ctx context.Context, s *sessions.SessionState) (bool, error)
 	CreateSessionFromToken(ctx context.Context, token string) (*sessions.SessionState, error)
+	CreateSessionFromExternalToken(ctx context.Context, idToken, accessToken string) (*sessions.SessionState, error)
 }
 
 func NewProvider(providerConfig options.Provider) (Provider, error) {

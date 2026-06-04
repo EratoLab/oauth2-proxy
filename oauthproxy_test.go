@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -62,9 +63,13 @@ func TestRobotsTxt(t *testing.T) {
 
 type TestProvider struct {
 	*providers.ProviderData
-	EmailAddress   string
-	ValidToken     bool
-	GroupValidator func(string) bool
+	EmailAddress        string
+	ValidToken          bool
+	GroupValidator      func(string) bool
+	ExternalSession     *sessions.SessionState
+	ExternalTokenErr    error
+	ExternalIDToken     string
+	ExternalAccessToken string
 }
 
 var _ providers.Provider = (*TestProvider)(nil)
@@ -103,6 +108,18 @@ func (tp *TestProvider) GetEmailAddress(_ context.Context, _ *sessions.SessionSt
 
 func (tp *TestProvider) ValidateSession(_ context.Context, _ *sessions.SessionState) bool {
 	return tp.ValidToken
+}
+
+func (tp *TestProvider) CreateSessionFromExternalToken(_ context.Context, idToken, accessToken string) (*sessions.SessionState, error) {
+	tp.ExternalIDToken = idToken
+	tp.ExternalAccessToken = accessToken
+	if tp.ExternalTokenErr != nil {
+		return nil, tp.ExternalTokenErr
+	}
+	if tp.ExternalSession != nil {
+		return tp.ExternalSession, nil
+	}
+	return tp.ProviderData.CreateSessionFromExternalToken(context.Background(), idToken, accessToken)
 }
 
 func Test_redeemCode(t *testing.T) {
@@ -172,6 +189,140 @@ func Test_enrichSession(t *testing.T) {
 			assert.NoError(t, err)
 			assert.Equal(t, tc.expectedUser, tc.session.User)
 			assert.Equal(t, tc.expectedEmail, tc.session.Email)
+		})
+	}
+}
+
+func TestRedeemExternalTokenEndpointCreatesSession(t *testing.T) {
+	opts := baseTestOptions()
+	err := validation.Validate(opts)
+	require.NoError(t, err)
+
+	proxy, err := NewOAuthProxy(opts, func(email string) bool {
+		return email == "user@example.com"
+	})
+	require.NoError(t, err)
+
+	testProvider := NewTestProvider(&url.URL{Host: "www.example.com"}, "")
+	testProvider.ExternalSession = &sessions.SessionState{
+		User:        "user",
+		Email:       "user@example.com",
+		IDToken:     "id-token",
+		AccessToken: "access-token",
+	}
+	proxy.provider = testProvider
+
+	req := httptest.NewRequest(http.MethodPost, opts.ProxyPrefix+externalTokenPath, strings.NewReader(`{"id_token":" id-token ","access_token":" access-token "}`))
+	req.Header.Set("Content-Type", "application/json; charset=utf-8")
+	rw := httptest.NewRecorder()
+
+	proxy.ServeHTTP(rw, req)
+
+	assert.Equal(t, http.StatusAccepted, rw.Code)
+	assert.Equal(t, "id-token", testProvider.ExternalIDToken)
+	assert.Equal(t, "access-token", testProvider.ExternalAccessToken)
+	require.NotEmpty(t, rw.Result().Cookies())
+
+	loadReq := httptest.NewRequest(http.MethodGet, "/", nil)
+	for _, cookie := range rw.Result().Cookies() {
+		loadReq.AddCookie(cookie)
+	}
+	session, err := proxy.LoadCookiedSession(loadReq)
+	require.NoError(t, err)
+	assert.Equal(t, "user@example.com", session.Email)
+	assert.Equal(t, "id-token", session.IDToken)
+	assert.Equal(t, "access-token", session.AccessToken)
+	assert.Empty(t, session.RefreshToken)
+}
+
+func TestRedeemExternalTokenEndpointAcceptsMissingAccessToken(t *testing.T) {
+	opts := baseTestOptions()
+	err := validation.Validate(opts)
+	require.NoError(t, err)
+
+	proxy, err := NewOAuthProxy(opts, func(string) bool { return true })
+	require.NoError(t, err)
+
+	testProvider := NewTestProvider(&url.URL{Host: "www.example.com"}, "")
+	testProvider.ExternalSession = &sessions.SessionState{
+		User:    "user",
+		Email:   "user@example.com",
+		IDToken: "id-token",
+	}
+	proxy.provider = testProvider
+
+	req := httptest.NewRequest(http.MethodPost, opts.ProxyPrefix+externalTokenPath, strings.NewReader(`{"id_token":"id-token"}`))
+	req.Header.Set("Content-Type", applicationJSON)
+	rw := httptest.NewRecorder()
+
+	proxy.ServeHTTP(rw, req)
+
+	assert.Equal(t, http.StatusAccepted, rw.Code)
+	assert.Equal(t, "id-token", testProvider.ExternalIDToken)
+	assert.Empty(t, testProvider.ExternalAccessToken)
+	require.NotEmpty(t, rw.Result().Cookies())
+}
+
+func TestRedeemExternalTokenEndpointRejectsInvalidRequests(t *testing.T) {
+	testCases := map[string]struct {
+		method       string
+		contentType  string
+		body         string
+		providerErr  error
+		expectedCode int
+	}{
+		"GET method": {
+			method:       http.MethodGet,
+			contentType:  applicationJSON,
+			body:         `{"id_token":"id-token"}`,
+			expectedCode: http.StatusMethodNotAllowed,
+		},
+		"non JSON content type": {
+			method:       http.MethodPost,
+			contentType:  "application/x-www-form-urlencoded",
+			body:         `id_token=id-token`,
+			expectedCode: http.StatusUnsupportedMediaType,
+		},
+		"missing ID token": {
+			method:       http.MethodPost,
+			contentType:  applicationJSON,
+			body:         `{"access_token":"access-token"}`,
+			expectedCode: http.StatusBadRequest,
+		},
+		"provider rejects token": {
+			method:       http.MethodPost,
+			contentType:  applicationJSON,
+			body:         `{"id_token":"id-token"}`,
+			providerErr:  errors.New("invalid token"),
+			expectedCode: http.StatusUnauthorized,
+		},
+	}
+
+	for name, tc := range testCases {
+		t.Run(name, func(t *testing.T) {
+			opts := baseTestOptions()
+			err := validation.Validate(opts)
+			require.NoError(t, err)
+
+			proxy, err := NewOAuthProxy(opts, func(string) bool { return true })
+			require.NoError(t, err)
+
+			testProvider := NewTestProvider(&url.URL{Host: "www.example.com"}, "")
+			testProvider.ExternalSession = &sessions.SessionState{
+				User:  "user",
+				Email: "user@example.com",
+			}
+			testProvider.ExternalTokenErr = tc.providerErr
+			proxy.provider = testProvider
+
+			req := httptest.NewRequest(tc.method, opts.ProxyPrefix+externalTokenPath, strings.NewReader(tc.body))
+			req.Header.Set("Content-Type", tc.contentType)
+			rw := httptest.NewRecorder()
+
+			proxy.ServeHTTP(rw, req)
+
+			assert.Equal(t, tc.expectedCode, rw.Code)
+			assert.Empty(t, rw.Result().Cookies())
 		})
 	}
 }

@@ -276,6 +276,84 @@ func TestOIDCProviderCreateSessionFromToken(t *testing.T) {
 	}
 }
 
+func TestOIDCProviderCreateSessionFromExternalToken(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/profile", r.URL.Path)
+		assert.Equal(t, "Bearer external-access-token", r.Header.Get("Authorization"))
+		rw.Header().Add("content-type", "application/json")
+		_, _ = rw.Write([]byte(`{"sub":"123456789"}`))
+	}))
+	defer server.Close()
+
+	serverURL, err := url.Parse(server.URL)
+	assert.NoError(t, err)
+	provider := newOIDCProvider(serverURL, false)
+
+	rawIDToken, err := newSignedTestIDToken(defaultIDToken)
+	assert.NoError(t, err)
+
+	ss, err := provider.CreateSessionFromExternalToken(context.Background(), rawIDToken, "external-access-token")
+	assert.NoError(t, err)
+
+	assert.Equal(t, defaultIDToken.Subject, ss.User)
+	assert.Equal(t, defaultIDToken.Email, ss.Email)
+	assert.Equal(t, rawIDToken, ss.IDToken)
+	assert.Equal(t, "external-access-token", ss.AccessToken)
+	assert.Empty(t, ss.RefreshToken)
+	assert.NotNil(t, ss.CreatedAt)
+	assert.Equal(t, defaultIDToken.ExpiresAt.Time, *ss.ExpiresOn)
+}
+
+func TestOIDCProviderCreateSessionFromExternalTokenWithoutAccessToken(t *testing.T) {
+	server, provider := newTestOIDCSetup([]byte(`{}`))
+	defer server.Close()
+
+	rawIDToken, err := newSignedTestIDToken(defaultIDToken)
+	assert.NoError(t, err)
+
+	ss, err := provider.CreateSessionFromExternalToken(context.Background(), rawIDToken, "")
+	assert.NoError(t, err)
+
+	assert.Equal(t, rawIDToken, ss.IDToken)
+	assert.Empty(t, ss.AccessToken)
+	assert.Empty(t, ss.RefreshToken)
+}
+
+func TestOIDCProviderCreateSessionFromExternalTokenRejectsInvalidAccessToken(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
+		http.Error(rw, "invalid token", http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	serverURL, err := url.Parse(server.URL)
+	assert.NoError(t, err)
+	provider := newOIDCProvider(serverURL, false)
+
+	rawIDToken, err := newSignedTestIDToken(defaultIDToken)
+	assert.NoError(t, err)
+
+	_, err = provider.CreateSessionFromExternalToken(context.Background(), rawIDToken, "invalid-access-token")
+	assert.Error(t, err)
+}
+
+func TestOIDCProviderCreateSessionFromExternalTokenRejectsSubjectMismatch(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
+		rw.Header().Add("content-type", "application/json")
+		_, _ = rw.Write([]byte(`{"sub":"different-subject"}`))
+	}))
+	defer server.Close()
+
+	serverURL, err := url.Parse(server.URL)
+	assert.NoError(t, err)
+	provider := newOIDCProvider(serverURL, false)
+
+	rawIDToken, err := newSignedTestIDToken(defaultIDToken)
+	assert.NoError(t, err)
+
+	_, err = provider.CreateSessionFromExternalToken(context.Background(), rawIDToken, "mismatched-access-token")
+	assert.Error(t, err)
+}
+
 func TestOIDCProviderResponseModeConfigured(t *testing.T) {
 	providerData := &ProviderData{
 		LoginURL: &url.URL{

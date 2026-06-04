@@ -69,9 +69,9 @@ func (p *ProviderData) Redeem(ctx context.Context, redirectURL, code, codeVerifi
 		params.Add("resource", p.ProtectedResource.String())
 	}
 
-    result := requests.New(p.RedeemURL.String()).
+	result := requests.New(p.RedeemURL.String()).
 		WithContext(ctx).
-        WithClient(p.HTTPClient).
+		WithClient(p.HTTPClient).
 		WithMethod("POST").
 		WithBody(bytes.NewBufferString(params.Encode())).
 		SetHeader("Content-Type", "application/x-www-form-urlencoded").
@@ -151,5 +151,9 @@ func (p *ProviderData) CreateSessionFromToken(ctx context.Context, token string)
 	if p.Verifier != nil {
 		return middleware.CreateTokenToSessionFunc(p.Verifier.Verify)(ctx, token)
 	}
+	return nil, ErrNotImplemented
+}
+
+func (p *ProviderData) CreateSessionFromExternalToken(_ context.Context, _, _ string) (*sessions.SessionState, error) {
 	return nil, ErrNotImplemented
 }

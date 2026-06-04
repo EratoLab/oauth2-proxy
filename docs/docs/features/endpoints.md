@@ -14,6 +14,7 @@ OAuth2 Proxy responds directly to the following endpoints. All other endpoints w
 - /oauth2/sign_out - this URL is used to clear the session cookie
 - /oauth2/start - a URL that will redirect to start the OAuth cycle
 - /oauth2/callback - the URL used at the end of the OAuth cycle. The oauth app will be configured with this as the callback url.
+- /oauth2/redeem-external-token - a POST endpoint that validates externally acquired OIDC tokens and creates a session cookie.
 - /oauth2/userinfo - the URL is used to return user's email from the session in JSON format.
 - /oauth2/auth - only returns a 202 Accepted response or a 401 Unauthorized response; for use with the [Nginx `auth_request` directive](../configuration/integrations/nginx)
 - /oauth2/static/\* - stylesheets and other dependencies used in the sign_in and error pages
@@ -60,6 +61,19 @@ It can be configured using the following query parameters:
 - `allowed_groups`: comma separated list of allowed groups
 - `allowed_email_domains`: comma separated list of allowed email domains
 - `allowed_emails`: comma separated list of allowed emails
+
+### Redeem external token
+
+This endpoint accepts `POST` requests with an `application/json` body containing an `id_token` field and an optional `access_token` field:
+
+```json
+{
+  "id_token": "<id token>",
+  "access_token": "<access token>"
+}
+```
+
+The configured provider must support external token redemption. For OIDC providers, oauth2-proxy verifies the ID token and validates a supplied access token against the provider before creating a session cookie. The session does not contain a refresh token.
 
 ### Proxy (/)
 

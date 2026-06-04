@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -12,7 +13,7 @@ import (
 	"github.com/oauth2-proxy/oauth2-proxy/v7/pkg/apis/sessions"
 	"github.com/oauth2-proxy/oauth2-proxy/v7/pkg/logger"
 	"github.com/oauth2-proxy/oauth2-proxy/v7/pkg/requests"
-    "github.com/oauth2-proxy/oauth2-proxy/v7/pkg/util/ptr"
+	"github.com/oauth2-proxy/oauth2-proxy/v7/pkg/util/ptr"
 	"golang.org/x/oauth2"
 )
 
@@ -51,7 +52,7 @@ func NewOIDCProvider(p *ProviderData, opts options.OIDCOptions) *OIDCProvider {
 
 	return &OIDCProvider{
 		ProviderData: p,
-        SkipNonce:    ptr.Deref(opts.InsecureSkipNonce, options.DefaultInsecureSkipNonce),
+		SkipNonce:    ptr.Deref(opts.InsecureSkipNonce, options.DefaultInsecureSkipNonce),
 	}
 }
 
@@ -113,11 +114,11 @@ func (p *OIDCProvider) EnrichSession(_ context.Context, s *sessions.SessionState
 
 // ValidateSession checks that the session's IDToken is still valid
 func (p *OIDCProvider) ValidateSession(ctx context.Context, s *sessions.SessionState) bool {
-    client := p.ProviderData.HTTPClient
-    if client == nil {
-        client = requests.DefaultHTTPClient
-    }
-    ctx = oidc.ClientContext(ctx, client)
+	client := p.ProviderData.HTTPClient
+	if client == nil {
+		client = requests.DefaultHTTPClient
+	}
+	ctx = oidc.ClientContext(ctx, client)
 
 	// https://openid.net/specs/openid-connect-core-1_0.html#RefreshTokenResponse
 	// The ID Token is optional in the Refresh Token Response
@@ -236,6 +237,79 @@ func (p *OIDCProvider) CreateSessionFromToken(ctx context.Context, token string)
 	ss.SetExpiresOn(idToken.Expiry)
 
 	return ss, nil
+}
+
+// CreateSessionFromExternalToken validates an externally acquired ID token and
+// optional access token, then converts them into a session without a refresh token.
+func (p *OIDCProvider) CreateSessionFromExternalToken(ctx context.Context, rawIDToken, accessToken string) (*sessions.SessionState, error) {
+	client := p.ProviderData.HTTPClient
+	if client == nil {
+		client = requests.DefaultHTTPClient
+	}
+	ctx = oidc.ClientContext(ctx, client)
+
+	idToken, err := p.Verifier.Verify(ctx, rawIDToken)
+	if err != nil {
+		return nil, fmt.Errorf("could not verify id_token: %v", err)
+	}
+
+	accessToken = strings.TrimSpace(accessToken)
+	if accessToken != "" {
+		if err := p.validateExternalAccessToken(ctx, accessToken, idToken.Subject); err != nil {
+			return nil, err
+		}
+	}
+
+	ss, err := p.buildSessionFromClaims(rawIDToken, accessToken)
+	if err != nil {
+		return nil, err
+	}
+
+	ss.AccessToken = accessToken
+	ss.IDToken = rawIDToken
+	ss.RefreshToken = ""
+	ss.CreatedAtNow()
+	ss.SetExpiresOn(idToken.Expiry)
+
+	return ss, nil
+}
+
+func (p *OIDCProvider) validateExternalAccessToken(ctx context.Context, accessToken, idTokenSubject string) error {
+	header := makeOIDCHeader(accessToken)
+	client := p.ProviderData.HTTPClient
+	if client == nil {
+		client = requests.DefaultHTTPClient
+	}
+
+	if p.ProfileURL != nil && p.ProfileURL.String() != "" && !p.SkipClaimsFromProfileURL {
+		var claims struct {
+			Subject string `json:"sub"`
+		}
+		result := requests.New(p.ProfileURL.String()).
+			WithContext(ctx).
+			WithClient(client).
+			WithHeaders(header).
+			Do()
+		if err := result.UnmarshalInto(&claims); err != nil {
+			return fmt.Errorf("access_token validation failed against profile URL: %v", err)
+		}
+		if claims.Subject == "" {
+			return errors.New("access_token validation failed: profile response missing sub claim")
+		}
+		if claims.Subject != idTokenSubject {
+			return errors.New("access_token validation failed: subject does not match id_token")
+		}
+		return nil
+	}
+
+	if p.ValidateURL != nil && p.ValidateURL.String() != "" {
+		if !validateToken(ctx, p, accessToken, header) {
+			return errors.New("access_token validation failed")
+		}
+		return nil
+	}
+
+	return errors.New("access_token validation failed: no profile or validation endpoint configured")
 }
 
 // createSession takes an oauth2.Token and creates a SessionState from it.
