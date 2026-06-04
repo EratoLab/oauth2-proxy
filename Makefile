@@ -102,7 +102,7 @@ build-docker-all: ## Build docker images for all supported architectures in both
 	docker buildx imagetools create -t $(REGISTRY)/$(REPOSITORY):${VERSION} \
 		$(REGISTRY)/$(REPOSITORY):${VERSION}-amd64 \
 		$(REGISTRY)/$(REPOSITORY):${VERSION}-arm64
-	docker buildx imagetools create -t $(REGISTRY)/$(REPOSITORY):${VERSION}-erato.2 \
+	docker buildx imagetools create -t $(REGISTRY)/$(REPOSITORY):${VERSION}-erato.3 \
 		$(REGISTRY)/$(REPOSITORY):${VERSION}-amd64 \
 		$(REGISTRY)/$(REPOSITORY):${VERSION}-arm64
 	# Create multi-platform manifests for alpine images
