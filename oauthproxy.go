@@ -1024,6 +1024,7 @@ func (p *OAuthProxy) RedeemExternalToken(rw http.ResponseWriter, req *http.Reque
 		http.Error(rw, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
 		return
 	}
+	session.CreatedFromExternalToken = true
 
 	if err := p.enrichSessionState(req.Context(), session); err != nil {
 		logger.Errorf("Error enriching external token session: %v", err)

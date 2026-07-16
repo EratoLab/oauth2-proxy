@@ -124,6 +124,16 @@ func TestString(t *testing.T) {
 			},
 			expected: "Session{email:email@email.email user:some.user PreferredUsername:preferred.user refresh_token:true}",
 		},
+		{
+			name: "Created from an external token",
+			sessionState: &SessionState{
+				Email:                    "email@email.email",
+				User:                     "some.user",
+				PreferredUsername:        "preferred.user",
+				CreatedFromExternalToken: true,
+			},
+			expected: "Session{email:email@email.email user:some.user PreferredUsername:preferred.user external_token:true refresh_token:false}",
+		},
 	}
 
 	for _, tc := range testCases {
@@ -177,6 +187,7 @@ func TestEncodeAndDecodeSessionState(t *testing.T) {
 			ExpiresOn:         &expires,
 			RefreshToken:      "RefreshToken.12349871293847fdsaihf9238h4f91h8fr.1349f831y98fd7",
 			Nonce:             []byte("abcdef1234567890abcdef1234567890"),
+			CreatedFromExternalToken: true,
 		},
 		"No ExpiresOn": {
 			Email:             "username@example.com",

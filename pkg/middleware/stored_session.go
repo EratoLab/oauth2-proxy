@@ -140,6 +140,12 @@ func (s *storedSessionLoader) getValidatedSession(rw http.ResponseWriter, req *h
 		// No session was found in the storage or error occurred, nothing more to do
 		return nil, err
 	}
+	// External token sessions can use the access token's exp claim as their
+	// authoritative lifetime. Enforce it on every request rather than waiting
+	// for the cookie refresh period before checking session expiry.
+	if session.CreatedFromExternalToken && session.IsExpired() {
+		return nil, errors.New("session is expired")
+	}
 
 	err = s.refreshSessionIfNeeded(rw, req, session)
 	if err != nil {

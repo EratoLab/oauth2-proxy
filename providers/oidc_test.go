@@ -9,8 +9,10 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"testing"
+	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/oauth2-proxy/oauth2-proxy/v7/pkg/apis/options"
 	"github.com/oauth2-proxy/oauth2-proxy/v7/pkg/apis/sessions"
 	"github.com/oauth2-proxy/oauth2-proxy/v7/pkg/encryption"
@@ -59,6 +61,11 @@ func newOIDCProvider(serverURL *url.URL, skipNonce bool) *OIDCProvider {
 			oidcIssuer,
 			mockJWKS{},
 			&oidc.Config{ClientID: oidcClientID},
+		), verificationOptions),
+		VerifierAllowingExpiredToken: internaloidc.NewVerifier(oidc.NewVerifier(
+			oidcIssuer,
+			mockJWKS{},
+			&oidc.Config{ClientID: oidcClientID, SkipExpiryCheck: true},
 		), verificationOptions),
 	}
 
@@ -302,6 +309,149 @@ func TestOIDCProviderCreateSessionFromExternalToken(t *testing.T) {
 	assert.Empty(t, ss.RefreshToken)
 	assert.NotNil(t, ss.CreatedAt)
 	assert.Equal(t, defaultIDToken.ExpiresAt.Time, *ss.ExpiresOn)
+	assert.True(t, ss.CreatedFromExternalToken)
+}
+
+func TestOIDCProviderCreateSessionFromExpiredExternalToken(t *testing.T) {
+	profileRequests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		profileRequests++
+		assert.Equal(t, "/profile", r.URL.Path)
+		rw.Header().Add("content-type", "application/json")
+		_, _ = rw.Write([]byte(`{"sub":"123456789"}`))
+	}))
+	defer server.Close()
+
+	serverURL, err := url.Parse(server.URL)
+	assert.NoError(t, err)
+	provider := newOIDCProvider(serverURL, false)
+	provider.AllowExpiredIDTokenOnExternalTokenRedemption = true
+
+	expiredIDToken := defaultIDToken
+	expiredIDToken.ExpiresAt = jwt.NewNumericDate(time.Now().Add(-time.Minute))
+	rawIDToken, err := newSignedTestIDToken(expiredIDToken)
+	assert.NoError(t, err)
+
+	accessTokenExpiry := time.Now().Add(time.Hour).Truncate(time.Second)
+	rawAccessToken := newExternalAccessToken(t, &accessTokenExpiry)
+
+	ss, err := provider.CreateSessionFromExternalToken(context.Background(), rawIDToken, rawAccessToken)
+	assert.NoError(t, err)
+	assert.True(t, ss.CreatedFromExternalToken)
+	assert.Equal(t, accessTokenExpiry, *ss.ExpiresOn)
+	assert.Equal(t, 1, profileRequests)
+	assert.True(t, provider.ValidateSession(context.Background(), ss))
+	assert.Equal(t, 2, profileRequests)
+}
+
+func TestOIDCProviderCreateSessionFromExpiredExternalTokenRejectsUnsafeInputs(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
+		rw.Header().Add("content-type", "application/json")
+		_, _ = rw.Write([]byte(`{"sub":"123456789"}`))
+	}))
+	defer server.Close()
+
+	serverURL, err := url.Parse(server.URL)
+	assert.NoError(t, err)
+
+	expiredIDToken := defaultIDToken
+	expiredIDToken.ExpiresAt = jwt.NewNumericDate(time.Now().Add(-time.Minute))
+	rawExpiredIDToken, err := newSignedTestIDToken(expiredIDToken)
+	assert.NoError(t, err)
+	wrongAudienceIDToken := expiredIDToken
+	wrongAudienceIDToken.Audience = jwt.ClaimStrings{"wrong-audience"}
+	rawWrongAudienceIDToken, err := newSignedTestIDToken(wrongAudienceIDToken)
+	assert.NoError(t, err)
+
+	validAccessTokenExpiry := time.Now().Add(time.Hour).Truncate(time.Second)
+	validAccessToken := newExternalAccessToken(t, &validAccessTokenExpiry)
+	expiredAccessTokenExpiry := time.Now().Add(-time.Minute).Truncate(time.Second)
+	expiredAccessToken := newExternalAccessToken(t, &expiredAccessTokenExpiry)
+	accessTokenWithoutExpiry := newExternalAccessToken(t, nil)
+
+	tests := []struct {
+		name          string
+		configure     func(*OIDCProvider)
+		idToken       string
+		accessToken   string
+		expectedError string
+	}{
+		{
+			name:          "option disabled",
+			idToken:       rawExpiredIDToken,
+			accessToken:   validAccessToken,
+			expectedError: "could not verify id_token",
+		},
+		{
+			name:          "missing access token",
+			configure:     func(p *OIDCProvider) { p.AllowExpiredIDTokenOnExternalTokenRedemption = true },
+			idToken:       rawExpiredIDToken,
+			expectedError: "an access_token is required when allowing an expired id_token",
+		},
+		{
+			name:          "wrong ID token audience",
+			configure:     func(p *OIDCProvider) { p.AllowExpiredIDTokenOnExternalTokenRedemption = true },
+			idToken:       rawWrongAudienceIDToken,
+			accessToken:   validAccessToken,
+			expectedError: "expected audience",
+		},
+		{
+			name:          "access token missing exp",
+			configure:     func(p *OIDCProvider) { p.AllowExpiredIDTokenOnExternalTokenRedemption = true },
+			idToken:       rawExpiredIDToken,
+			accessToken:   accessTokenWithoutExpiry,
+			expectedError: "access_token is missing exp claim",
+		},
+		{
+			name:          "expired access token",
+			configure:     func(p *OIDCProvider) { p.AllowExpiredIDTokenOnExternalTokenRedemption = true },
+			idToken:       rawExpiredIDToken,
+			accessToken:   expiredAccessToken,
+			expectedError: "access_token is expired",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			provider := newOIDCProvider(serverURL, false)
+			if tc.configure != nil {
+				tc.configure(provider)
+			}
+			_, err := provider.CreateSessionFromExternalToken(context.Background(), tc.idToken, tc.accessToken)
+			assert.ErrorContains(t, err, tc.expectedError)
+		})
+	}
+}
+
+func TestOIDCProviderCreateSessionFromExpiredExternalTokenEnforcesNotBefore(t *testing.T) {
+	serverURL, server := newOIDCServer([]byte(`{"sub":"123456789"}`))
+	defer server.Close()
+	provider := newOIDCProvider(serverURL, false)
+	provider.AllowExpiredIDTokenOnExternalTokenRedemption = true
+
+	idToken := defaultIDToken
+	idToken.ExpiresAt = jwt.NewNumericDate(time.Now().Add(-time.Minute))
+	idToken.NotBefore = jwt.NewNumericDate(time.Now().Add(10 * time.Minute))
+	rawIDToken, err := newSignedTestIDToken(idToken)
+	assert.NoError(t, err)
+
+	accessTokenExpiry := time.Now().Add(time.Hour)
+	_, err = provider.CreateSessionFromExternalToken(context.Background(), rawIDToken, newExternalAccessToken(t, &accessTokenExpiry))
+	assert.ErrorContains(t, err, "before the nbf")
+}
+
+func newExternalAccessToken(t *testing.T, expiry *time.Time) string {
+	t.Helper()
+	claims := defaultIDToken
+	claims.NotBefore = jwt.NewNumericDate(time.Time{})
+	if expiry == nil {
+		claims.ExpiresAt = nil
+	} else {
+		claims.ExpiresAt = jwt.NewNumericDate(*expiry)
+	}
+	rawToken, err := newSignedTestIDToken(claims)
+	assert.NoError(t, err)
+	return rawToken
 }
 
 func TestOIDCProviderCreateSessionFromExternalTokenWithoutAccessToken(t *testing.T) {

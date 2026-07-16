@@ -20,6 +20,7 @@ type ProviderVerifier interface {
 	DiscoveryEnabled() bool
 	Provider() DiscoveryProvider
 	Verifier() IDTokenVerifier
+	VerifierAllowingExpiredToken() IDTokenVerifier
 }
 
 // ProviderVerifierOptions allows you to configure a ProviderVerifier
@@ -119,6 +120,9 @@ func NewProviderVerifier(ctx context.Context, opts ProviderVerifierOptions) (Pro
 		return nil, fmt.Errorf("could not get verifier builder: %w", err)
 	}
 	verifier := NewVerifier(verifierBuilder(opts.toOIDCConfig()), opts.toVerificationOptions())
+	allowExpiredConfig := opts.toOIDCConfig()
+	allowExpiredConfig.SkipExpiryCheck = true
+	verifierAllowingExpiredToken := NewVerifier(verifierBuilder(allowExpiredConfig), opts.toVerificationOptions())
 
 	if provider == nil {
 		// To avoid the possibility of nil pointers, always return an empty provider if discovery didn't occur.
@@ -130,6 +134,7 @@ func NewProviderVerifier(ctx context.Context, opts ProviderVerifierOptions) (Pro
 		discoveryEnabled: !opts.SkipDiscovery,
 		provider:         provider,
 		verifier:         verifier,
+		verifierAllowingExpiredToken: verifierAllowingExpiredToken,
 	}, nil
 }
 
@@ -260,6 +265,7 @@ type providerVerifier struct {
 	discoveryEnabled bool
 	provider         DiscoveryProvider
 	verifier         IDTokenVerifier
+	verifierAllowingExpiredToken IDTokenVerifier
 }
 
 // DiscoveryEnabled returns whether the provider verifier was constructed
@@ -276,4 +282,12 @@ func (p *providerVerifier) Provider() DiscoveryProvider {
 // Verifier returns the ID token verifier
 func (p *providerVerifier) Verifier() IDTokenVerifier {
 	return p.verifier
+}
+
+// VerifierAllowingExpiredToken returns an ID token verifier that performs the
+// same signature, issuer, audience, and algorithm validation as Verifier, but
+// does not reject an expired token. Callers must enforce all other temporal
+// claims and scope its use carefully.
+func (p *providerVerifier) VerifierAllowingExpiredToken() IDTokenVerifier {
+	return p.verifierAllowingExpiredToken
 }

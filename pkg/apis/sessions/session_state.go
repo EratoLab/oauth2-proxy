@@ -22,6 +22,10 @@ type SessionState struct {
 	IDToken      string `msgpack:"it,omitempty"`
 	RefreshToken string `msgpack:"rt,omitempty"`
 
+	// CreatedFromExternalToken indicates that the session was created through
+	// the redeem-external-token flow.
+	CreatedFromExternalToken bool `msgpack:"et,omitempty"`
+
 	Nonce []byte `msgpack:"n,omitempty"`
 
 	Email             string   `msgpack:"e,omitempty"`
@@ -118,6 +122,9 @@ func (s *SessionState) String() string {
 	}
 	if s.IDToken != "" {
 		o += " id_token:true"
+	}
+	if s.CreatedFromExternalToken {
+		o += " external_token:true"
 	}
 	if s.CreatedAt != nil && !s.CreatedAt.IsZero() {
 		o += fmt.Sprintf(" created:%s", s.CreatedAt)

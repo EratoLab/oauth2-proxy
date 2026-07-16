@@ -25,6 +25,10 @@ const (
 	// for OIDCOptions.InsecureSkipIssuerVerification
 	DefaultInsecureSkipIssuerVerification bool = false
 
+	// DefaultInsecureAllowExpiredIDTokenOnExternalRedemption is the default value
+	// for OIDCOptions.InsecureAllowExpiredIDTokenOnExternalRedemption
+	DefaultInsecureAllowExpiredIDTokenOnExternalRedemption bool = false
+
 	// DefaultSkipClaimsFromProfileURL is the default value
 	// for Provider.SkipClaimsFromProfileURL
 	DefaultSkipClaimsFromProfileURL bool = false
@@ -292,6 +296,11 @@ type OIDCOptions struct {
 	// InsecureAllowUnverifiedEmail prevents failures if an email address in an id_token is not verified
 	// default set to 'false'
 	InsecureAllowUnverifiedEmail *bool `yaml:"insecureAllowUnverifiedEmail,omitempty"`
+	// InsecureAllowExpiredIDTokenOnExternalRedemption allows an expired ID token
+	// only on the redeem-external-token flow when accompanied by a valid access token.
+	// The access token expiry becomes the session expiry.
+	// default set to 'false'
+	InsecureAllowExpiredIDTokenOnExternalRedemption *bool `yaml:"insecureAllowExpiredIDTokenOnExternalRedemption,omitempty"`
 	// InsecureSkipIssuerVerification skips verification of ID token issuers. When false, ID Token Issuers must match the OIDC discovery URL
 	// default set to 'false'
 	InsecureSkipIssuerVerification *bool `yaml:"insecureSkipIssuerVerification,omitempty"`
@@ -351,6 +360,7 @@ func providerDefaults() Providers {
 			},
 			OIDCConfig: OIDCOptions{
 				InsecureAllowUnverifiedEmail: ptr.To(DefaultInsecureAllowUnverifiedEmail),
+				InsecureAllowExpiredIDTokenOnExternalRedemption: ptr.To(DefaultInsecureAllowExpiredIDTokenOnExternalRedemption),
 				InsecureSkipNonce:            ptr.To(DefaultInsecureSkipNonce),
 				SkipDiscovery:                ptr.To(DefaultSkipDiscovery),
 				UserIDClaim:                  OIDCEmailClaim, // Deprecated: Use OIDCEmailClaim
@@ -391,6 +401,9 @@ func (o *OIDCOptions) EnsureDefaults() {
 	// Ensure OIDC defaults
 	if o.InsecureAllowUnverifiedEmail == nil {
 		o.InsecureAllowUnverifiedEmail = ptr.To(DefaultInsecureAllowUnverifiedEmail)
+	}
+	if o.InsecureAllowExpiredIDTokenOnExternalRedemption == nil {
+		o.InsecureAllowExpiredIDTokenOnExternalRedemption = ptr.To(DefaultInsecureAllowExpiredIDTokenOnExternalRedemption)
 	}
 	if o.InsecureSkipNonce == nil {
 		o.InsecureSkipNonce = ptr.To(DefaultInsecureSkipNonce)

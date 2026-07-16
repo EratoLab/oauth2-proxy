@@ -75,6 +75,8 @@ This endpoint accepts `POST` requests with an `application/json` body containing
 
 The configured provider must support external token redemption. For OIDC providers, oauth2-proxy verifies the ID token and validates a supplied access token against the provider before creating a session cookie. The session does not contain a refresh token.
 
+When `--insecure-oidc-allow-expired-id-token-on-external-redemption` is enabled, this endpoint may accept a cryptographically valid but expired ID token only when a valid access token is also supplied. The access token must be a JWT with an unexpired integer `exp` claim, and its subject must match the ID token. The access token expiry becomes the session expiry. This exception applies only to sessions created by this endpoint; regular OIDC callbacks and bearer-token authentication continue to reject expired ID tokens.
+
 ### Proxy (/)
 
 This endpoint returns the upstream response if authenticated.

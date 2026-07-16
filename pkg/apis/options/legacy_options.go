@@ -537,6 +537,7 @@ type LegacyProvider struct {
 	UseSystemTrustStore                bool     `flag:"use-system-trust-store" cfg:"use_system_trust_store"`
 	OIDCIssuerURL                      string   `flag:"oidc-issuer-url" cfg:"oidc_issuer_url"`
 	InsecureOIDCAllowUnverifiedEmail   bool     `flag:"insecure-oidc-allow-unverified-email" cfg:"insecure_oidc_allow_unverified_email"`
+	InsecureOIDCAllowExpiredIDTokenOnExternalRedemption bool `flag:"insecure-oidc-allow-expired-id-token-on-external-redemption" cfg:"insecure_oidc_allow_expired_id_token_on_external_redemption"`
 	InsecureOIDCSkipIssuerVerification bool     `flag:"insecure-oidc-skip-issuer-verification" cfg:"insecure_oidc_skip_issuer_verification"`
 	InsecureOIDCSkipNonce              bool     `flag:"insecure-oidc-skip-nonce" cfg:"insecure_oidc_skip_nonce"`
 	SkipOIDCDiscovery                  bool     `flag:"skip-oidc-discovery" cfg:"skip_oidc_discovery"`
@@ -603,6 +604,7 @@ func legacyProviderFlagSet() *pflag.FlagSet {
 	flagSet.Bool("use-system-trust-store", false, "Determines if 'provider-ca-file' files and the system trust store are used. If set to true, your custom CA files and the system trust store are used otherwise only your custom CA files.")
 	flagSet.String("oidc-issuer-url", "", "OpenID Connect issuer URL (ie: https://accounts.google.com)")
 	flagSet.Bool("insecure-oidc-allow-unverified-email", false, "Don't fail if an email address in an id_token is not verified")
+	flagSet.Bool("insecure-oidc-allow-expired-id-token-on-external-redemption", false, "Allow expired OIDC ID tokens only on external token redemption when accompanied by a valid access token")
 	flagSet.Bool("insecure-oidc-skip-issuer-verification", false, "Do not verify if issuer matches OIDC discovery URL")
 	flagSet.Bool("insecure-oidc-skip-nonce", true, "skip verifying the OIDC ID Token's nonce claim")
 	flagSet.Bool("skip-oidc-discovery", false, "Skip OIDC discovery and use manually supplied Endpoints")
@@ -732,6 +734,7 @@ func (l *LegacyProvider) convert() (Providers, error) {
 	provider.OIDCConfig = OIDCOptions{
 		IssuerURL:                      l.OIDCIssuerURL,
 		InsecureAllowUnverifiedEmail:   &l.InsecureOIDCAllowUnverifiedEmail,
+		InsecureAllowExpiredIDTokenOnExternalRedemption: &l.InsecureOIDCAllowExpiredIDTokenOnExternalRedemption,
 		InsecureSkipIssuerVerification: &l.InsecureOIDCSkipIssuerVerification,
 		InsecureSkipNonce:              &l.InsecureOIDCSkipNonce,
 		SkipDiscovery:                  &l.SkipOIDCDiscovery,

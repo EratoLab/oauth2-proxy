@@ -61,6 +61,10 @@ type ProviderData struct {
 	// Verifier is the OIDC ID Token Verifier to be used by any OIDC-based providers to verify ID Tokens returned by the provider.
 	// It must be set up by the provider implementation and is not expected to be configured directly by users.
 	Verifier internaloidc.IDTokenVerifier
+	// VerifierAllowingExpiredToken performs the same verification as Verifier,
+	// except for the ID token expiry check. It is restricted to the opt-in
+	// redeem-external-token flow.
+	VerifierAllowingExpiredToken internaloidc.IDTokenVerifier
 
 	// Additional claims to be obtained from the upstream IDP, either from the id_token or from the userinfo endpoint if configured.
 	AdditionalClaims []string `json:"additionalClaims,omitempty"`

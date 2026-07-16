@@ -2,6 +2,8 @@ package providers
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -21,10 +23,14 @@ import (
 type OIDCProvider struct {
 	*ProviderData
 
-	SkipNonce bool
+	SkipNonce                                    bool
+	AllowExpiredIDTokenOnExternalTokenRedemption bool
 }
 
-const oidcDefaultScope = "openid email profile"
+const (
+	oidcDefaultScope       = "openid email profile"
+	oidcNotBeforeClockSkew = 5 * time.Minute
+)
 
 // NewOIDCProvider initiates a new OIDCProvider
 func NewOIDCProvider(p *ProviderData, opts options.OIDCOptions) *OIDCProvider {
@@ -53,6 +59,7 @@ func NewOIDCProvider(p *ProviderData, opts options.OIDCOptions) *OIDCProvider {
 	return &OIDCProvider{
 		ProviderData: p,
 		SkipNonce:    ptr.Deref(opts.InsecureSkipNonce, options.DefaultInsecureSkipNonce),
+		AllowExpiredIDTokenOnExternalTokenRedemption: ptr.Deref(opts.InsecureAllowExpiredIDTokenOnExternalRedemption, options.DefaultInsecureAllowExpiredIDTokenOnExternalRedemption),
 	}
 }
 
@@ -120,6 +127,22 @@ func (p *OIDCProvider) ValidateSession(ctx context.Context, s *sessions.SessionS
 	}
 	ctx = oidc.ClientContext(ctx, client)
 
+	if s.CreatedFromExternalToken && p.AllowExpiredIDTokenOnExternalTokenRedemption && s.AccessToken != "" {
+		idToken, err := p.verifyIDTokenAllowingExpiry(ctx, s.IDToken)
+		if err != nil {
+			logger.Errorf("external id_token verification failed: %v", err)
+			return false
+		}
+		if err := p.validateExternalAccessToken(ctx, s.AccessToken, idToken.Subject); err != nil {
+			logger.Errorf("external access_token validation failed: %v", err)
+			return false
+		}
+		if _, err := validateExternalAccessTokenExpiry(s.AccessToken, time.Now()); err != nil {
+			return false
+		}
+		return true
+	}
+
 	// https://openid.net/specs/openid-connect-core-1_0.html#RefreshTokenResponse
 	// The ID Token is optional in the Refresh Token Response
 	if s.Refreshed {
@@ -134,6 +157,11 @@ func (p *OIDCProvider) ValidateSession(ctx context.Context, s *sessions.SessionS
 	if _, err := p.Verifier.Verify(ctx, s.IDToken); err != nil {
 		logger.Errorf("id_token verification failed: %v", err)
 		return false
+	}
+	if s.CreatedFromExternalToken {
+		// The external identity provider, rather than oauth2-proxy, initiated the
+		// authentication flow, so there is no oauth2-proxy nonce to check.
+		return true
 	}
 
 	if p.SkipNonce {
@@ -248,15 +276,23 @@ func (p *OIDCProvider) CreateSessionFromExternalToken(ctx context.Context, rawID
 	}
 	ctx = oidc.ClientContext(ctx, client)
 
-	idToken, err := p.Verifier.Verify(ctx, rawIDToken)
+	accessToken = strings.TrimSpace(accessToken)
+	idToken, err := p.verifyExternalIDToken(ctx, rawIDToken, accessToken)
 	if err != nil {
-		return nil, fmt.Errorf("could not verify id_token: %v", err)
+		return nil, err
 	}
 
-	accessToken = strings.TrimSpace(accessToken)
+	var accessTokenExpiry *time.Time
 	if accessToken != "" {
 		if err := p.validateExternalAccessToken(ctx, accessToken, idToken.Subject); err != nil {
 			return nil, err
+		}
+		if p.AllowExpiredIDTokenOnExternalTokenRedemption {
+			expiry, err := validateExternalAccessTokenExpiry(accessToken, time.Now())
+			if err != nil {
+				return nil, err
+			}
+			accessTokenExpiry = &expiry
 		}
 	}
 
@@ -268,10 +304,119 @@ func (p *OIDCProvider) CreateSessionFromExternalToken(ctx context.Context, rawID
 	ss.AccessToken = accessToken
 	ss.IDToken = rawIDToken
 	ss.RefreshToken = ""
+	ss.CreatedFromExternalToken = true
 	ss.CreatedAtNow()
-	ss.SetExpiresOn(idToken.Expiry)
+	if accessTokenExpiry != nil {
+		ss.SetExpiresOn(*accessTokenExpiry)
+	} else {
+		ss.SetExpiresOn(idToken.Expiry)
+	}
 
 	return ss, nil
+}
+
+func (p *OIDCProvider) verifyExternalIDToken(ctx context.Context, rawIDToken, accessToken string) (*oidc.IDToken, error) {
+	idToken, err := p.Verifier.Verify(ctx, rawIDToken)
+	if err == nil {
+		return idToken, nil
+	}
+	if !p.AllowExpiredIDTokenOnExternalTokenRedemption {
+		return nil, fmt.Errorf("could not verify id_token: %v", err)
+	}
+	if accessToken == "" {
+		return nil, fmt.Errorf("could not verify id_token: %v; an access_token is required when allowing an expired id_token", err)
+	}
+
+	idToken, allowExpiredErr := p.verifyIDTokenAllowingExpiry(ctx, rawIDToken)
+	if allowExpiredErr != nil {
+		return nil, fmt.Errorf("could not verify id_token: %v", allowExpiredErr)
+	}
+	if !idToken.Expiry.Before(time.Now()) {
+		// The expiry-tolerant verifier only exists to handle expiration. If the
+		// token is not expired, preserve the original verification failure.
+		return nil, fmt.Errorf("could not verify id_token: %v", err)
+	}
+
+	logger.Printf("Allowing expired id_token from external token redemption; access_token expiry will determine the session lifetime")
+	return idToken, nil
+}
+
+func (p *OIDCProvider) verifyIDTokenAllowingExpiry(ctx context.Context, rawIDToken string) (*oidc.IDToken, error) {
+	if p.VerifierAllowingExpiredToken == nil {
+		return nil, errors.New("OIDC verifier allowing expired tokens is not configured")
+	}
+
+	idToken, err := p.VerifierAllowingExpiredToken.Verify(ctx, rawIDToken)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateIDTokenNotBefore(idToken, time.Now()); err != nil {
+		return nil, err
+	}
+	return idToken, nil
+}
+
+func validateIDTokenNotBefore(idToken *oidc.IDToken, now time.Time) error {
+	var claims struct {
+		NotBefore *json.Number `json:"nbf"`
+	}
+	if err := idToken.Claims(&claims); err != nil {
+		return fmt.Errorf("could not parse id_token temporal claims: %v", err)
+	}
+	if claims.NotBefore == nil {
+		return nil
+	}
+
+	notBeforeUnix, err := claims.NotBefore.Int64()
+	if err != nil {
+		return fmt.Errorf("id_token nbf claim is not an integer Unix timestamp: %v", err)
+	}
+	notBefore := time.Unix(notBeforeUnix, 0)
+	if now.Add(oidcNotBeforeClockSkew).Before(notBefore) {
+		return fmt.Errorf("current time %v before the nbf (not before) time: %v", now, notBefore)
+	}
+	return nil
+}
+
+func validateExternalAccessTokenExpiry(accessToken string, now time.Time) (time.Time, error) {
+	expiry, err := extractJWTExpiry(accessToken)
+	if err != nil {
+		logger.Errorf("external access_token expiry validation failed: %v", err)
+		return time.Time{}, fmt.Errorf("access_token expiry validation failed: %v", err)
+	}
+	if !now.Before(expiry) {
+		err := fmt.Errorf("access_token is expired (token expiry: %v)", expiry)
+		logger.Errorf("external access_token expiry validation failed: %v", err)
+		return time.Time{}, err
+	}
+	return expiry, nil
+}
+
+func extractJWTExpiry(rawToken string) (time.Time, error) {
+	parts := strings.Split(rawToken, ".")
+	if len(parts) != 3 {
+		return time.Time{}, fmt.Errorf("access_token is not a JWT: expected 3 parts, got %d", len(parts))
+	}
+
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return time.Time{}, fmt.Errorf("access_token has an invalid JWT payload: %v", err)
+	}
+	var claims struct {
+		ExpiresAt *json.Number `json:"exp"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return time.Time{}, fmt.Errorf("access_token has an invalid JWT payload: %v", err)
+	}
+	if claims.ExpiresAt == nil {
+		return time.Time{}, errors.New("access_token is missing exp claim")
+	}
+
+	expiresAtUnix, err := claims.ExpiresAt.Int64()
+	if err != nil {
+		return time.Time{}, fmt.Errorf("access_token exp claim is not an integer Unix timestamp: %v", err)
+	}
+	return time.Unix(expiresAtUnix, 0), nil
 }
 
 func (p *OIDCProvider) validateExternalAccessToken(ctx context.Context, accessToken, idTokenSubject string) error {

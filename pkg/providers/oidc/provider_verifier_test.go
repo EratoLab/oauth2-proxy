@@ -84,6 +84,8 @@ var _ = Describe("ProviderVerifier", func() {
 
 		Expect(pv.DiscoveryEnabled()).ToNot(Equal(opts.SkipDiscovery), "DiscoveryEnabled should be the reverse of skip discovery")
 		Expect(pv.Provider()).ToNot(BeNil())
+		Expect(pv.Verifier()).ToNot(BeNil())
+		Expect(pv.VerifierAllowingExpiredToken()).ToNot(BeNil())
 
 		if pv.DiscoveryEnabled() {
 			endpoints := pv.Provider().Endpoints()

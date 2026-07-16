@@ -233,6 +233,7 @@ func TestRedeemExternalTokenEndpointCreatesSession(t *testing.T) {
 	assert.Equal(t, "id-token", session.IDToken)
 	assert.Equal(t, "access-token", session.AccessToken)
 	assert.Empty(t, session.RefreshToken)
+	assert.True(t, session.CreatedFromExternalToken)
 }
 
 func TestRedeemExternalTokenEndpointAcceptsMissingAccessToken(t *testing.T) {

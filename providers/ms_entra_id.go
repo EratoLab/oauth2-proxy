@@ -121,6 +121,27 @@ func (p *MicrosoftEntraIDProvider) ValidateSession(ctx context.Context, session 
 	return p.OIDCProvider.ValidateSession(ctx, session)
 }
 
+// CreateSessionFromExternalToken creates the generic OIDC session and applies
+// Entra-specific tenant restrictions before the session is persisted.
+func (p *MicrosoftEntraIDProvider) CreateSessionFromExternalToken(ctx context.Context, idToken, accessToken string) (*sessions.SessionState, error) {
+	session, err := p.OIDCProvider.CreateSessionFromExternalToken(ctx, idToken, accessToken)
+	if err != nil {
+		return nil, err
+	}
+	if len(p.multiTenantAllowedTenants) == 0 {
+		return session, nil
+	}
+
+	tenant, err := p.getTenantFromToken(session)
+	if err != nil {
+		return nil, fmt.Errorf("unable to retrieve entra tenant from token: %v", err)
+	}
+	if !p.checkTenantMatchesTenantList(tenant, p.multiTenantAllowedTenants) {
+		return nil, fmt.Errorf("entra tenant %s is not specified in the list of allowed tenants", tenant)
+	}
+	return session, nil
+}
+
 // Redeem exchanges the OAuth2 authentication token for an ID token, considering federated token authentication
 func (p *MicrosoftEntraIDProvider) Redeem(ctx context.Context, redirectURL, code, codeVerifier string) (*sessions.SessionState, error) {
 	if p.federatedTokenAuth {

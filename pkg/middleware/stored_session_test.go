@@ -138,6 +138,13 @@ var _ = Describe("Stored Session Suite", func() {
 						ExpiresOn:    &createdPast,
 						Clock:        clock,
 					}, nil
+				case "_oauth2_proxy=ExpiredExternalSession":
+					return &sessionsapi.SessionState{
+						CreatedFromExternalToken: true,
+						CreatedAt:                &createdPast,
+						ExpiresOn:                &createdPast,
+						Clock:                    clock,
+					}, nil
 				case "_oauth2_proxy=RefreshSession":
 					return &sessionsapi.SessionState{
 						RefreshToken: refresh,
@@ -267,6 +274,17 @@ var _ = Describe("Stored Session Suite", func() {
 				expectedSession: nil,
 				store:           defaultSessionStore,
 				refreshPeriod:   1 * time.Minute,
+				refreshSession:  defaultRefreshFunc,
+				validateSession: defaultValidateFunc,
+			}),
+			Entry("with an expired external token session younger than the refresh period", storedSessionLoaderTableInput{
+				requestHeaders: http.Header{
+					"Cookie": []string{"_oauth2_proxy=ExpiredExternalSession"},
+				},
+				existingSession: nil,
+				expectedSession: nil,
+				store:           defaultSessionStore,
+				refreshPeriod:   10 * time.Minute,
 				refreshSession:  defaultRefreshFunc,
 				validateSession: defaultValidateFunc,
 			}),

@@ -119,6 +119,7 @@ func newProviderDataFromConfig(providerConfig options.Provider) (*ProviderData, 
 		}
 
 		p.Verifier = pv.Verifier()
+		p.VerifierAllowingExpiredToken = pv.VerifierAllowingExpiredToken()
 		if pv.DiscoveryEnabled() {
 			// Use the discovered values rather than any specified values
 			endpoints := pv.Provider().Endpoints()

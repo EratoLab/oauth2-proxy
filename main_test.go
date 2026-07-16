@@ -185,6 +185,7 @@ redirect_url="http://localhost:4180/oauth2/callback"
 					ExtraAudiences:                 []string{},
 					InsecureSkipNonce:              ptr.To(true),
 					InsecureAllowUnverifiedEmail:   ptr.To(false),
+					InsecureAllowExpiredIDTokenOnExternalRedemption: ptr.To(false),
 					InsecureSkipIssuerVerification: ptr.To(false),
 					SkipDiscovery:                  ptr.To(false),
 					EnabledSigningAlgs:             []string{},
