@@ -30,7 +30,7 @@ GOLANGCILINT ?= golangci-lint
 BINARY := oauth2-proxy
 VERSION ?= $(shell git describe --always --dirty --tags 2>/dev/null || echo "undefined")
 # Allow to override image registry.
-REGISTRY   ?= harbor.imassage.me/erato
+REGISTRY   ?= registry.eratolabs.com/erato
 REPOSITORY ?= oauth2-proxy
 
 DATE := $(shell date +"%Y%m%d")
@@ -102,7 +102,7 @@ build-docker-all: ## Build docker images for all supported architectures in both
 	docker buildx imagetools create -t $(REGISTRY)/$(REPOSITORY):${VERSION} \
 		$(REGISTRY)/$(REPOSITORY):${VERSION}-amd64 \
 		$(REGISTRY)/$(REPOSITORY):${VERSION}-arm64
-	docker buildx imagetools create -t $(REGISTRY)/$(REPOSITORY):${VERSION}-erato.3 \
+	docker buildx imagetools create -t $(REGISTRY)/$(REPOSITORY):${VERSION}-erato.4 \
 		$(REGISTRY)/$(REPOSITORY):${VERSION}-amd64 \
 		$(REGISTRY)/$(REPOSITORY):${VERSION}-arm64
 	# Create multi-platform manifests for alpine images
